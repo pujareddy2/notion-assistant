@@ -146,63 +146,13 @@ export async function createServer() {
             },
             {
               name: "get_page_content",
-              description: "Retrieve the content blocks of a Notion page.",
+              description: "Retrieve the content blocks of a Notion page. Use this to find block IDs for deletion.",
               parameters: {
                 type: Type.OBJECT,
                 properties: {
                   page_id: { type: Type.STRING, description: "The ID of the page." }
                 },
                 required: ["page_id"]
-              }
-            },
-            {
-              name: "create_database",
-              description: "Create a new database in Notion.",
-              parameters: {
-                type: Type.OBJECT,
-                properties: {
-                  parent_id: { type: Type.STRING, description: "Parent page ID." },
-                  title: { type: Type.STRING, description: "Database title." },
-                  properties: { type: Type.OBJECT, description: "Database schema (e.g., { 'Name': { 'title': {} }, 'Status': { 'select': { 'options': [...] } } })" }
-                },
-                required: ["parent_id", "title", "properties"]
-              }
-            },
-            {
-              name: "add_database_row",
-              description: "Add a row (page) to a Notion database.",
-              parameters: {
-                type: Type.OBJECT,
-                properties: {
-                  database_id: { type: Type.STRING, description: "The ID of the database." },
-                  properties: { type: Type.OBJECT, description: "Row properties matching the database schema." }
-                },
-                required: ["database_id", "properties"]
-              }
-            },
-            {
-              name: "update_database_row",
-              description: "Update properties of an existing row in a Notion database.",
-              parameters: {
-                type: Type.OBJECT,
-                properties: {
-                  page_id: { type: Type.STRING, description: "The ID of the row (page) to update." },
-                  properties: { type: Type.OBJECT, description: "Properties to update." }
-                },
-                required: ["page_id", "properties"]
-              }
-            },
-            {
-              name: "list_database_rows",
-              description: "List rows from a Notion database.",
-              parameters: {
-                type: Type.OBJECT,
-                properties: {
-                  database_id: { type: Type.STRING, description: "The ID of the database." },
-                  filter: { type: Type.OBJECT, description: "Optional filter." },
-                  sorts: { type: Type.ARRAY, items: { type: Type.OBJECT }, description: "Optional sorts." }
-                },
-                required: ["database_id"]
               }
             },
             {
@@ -229,6 +179,17 @@ export async function createServer() {
               }
             },
             {
+              name: "delete_block",
+              description: "Delete a specific block (text, image, etc.) from a page.",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  block_id: { type: Type.STRING, description: "The ID of the block to delete." }
+                },
+                required: ["block_id"]
+              }
+            },
+            {
               name: "generate_image",
               description: "Generate an image based on a prompt and return its URL.",
               parameters: {
@@ -240,7 +201,8 @@ export async function createServer() {
               }
             }
           ]
-        }
+        },
+        { googleSearch: {} }
       ];
 
       // Optimize history: only keep last 6 messages to reduce token overhead and speed up processing
@@ -253,12 +215,20 @@ export async function createServer() {
         parts: [{ text: m.content }]
       }));
 
-      const systemInstruction = `You are a high-speed Notion AI.
+      const systemInstruction = `You are Notion AI, a highly capable workspace assistant.
+      Your primary capabilities are:
+      1. **Creation of pages**: Use 'create_page'.
+      2. **Deletion of pages**: Use 'archive_page'.
+      3. **Adding text to a page**: Use 'update_page_content' to append blocks.
+      4. **Deleting specific text**: Use 'get_page_content' to find block IDs, then 'delete_block' to remove them.
+      5. **Researching**: Use your internal knowledge and the 'googleSearch' tool to answer questions and provide information.
+
+      Guidelines:
       - parent_id: ${notionPageId}
-      - Be extremely brief.
-      - Parallelize tools.
-      - Search first if needed.
-      - Use generate_image for images.
+      - Be concise and professional, like Notion AI.
+      - Always confirm actions briefly.
+      - If a user asks to "delete text", first fetch the page content to identify the blocks.
+      - Use 'search_notion' if the user doesn't provide a specific page ID.
       - Summarize briefly after actions.`;
 
       // Fast-path for simple greetings or short messages (less than 20 chars)
@@ -373,6 +343,11 @@ export async function createServer() {
                 result = await notion.pages.update({
                   page_id: args.page_id as string,
                   archived: true
+                });
+                break;
+              case "delete_block":
+                result = await notion.blocks.delete({
+                  block_id: args.block_id as string
                 });
                 break;
               case "generate_image":

@@ -152,9 +152,9 @@ export default function App() {
             <Layout className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h1 className="font-bold text-lg tracking-tight leading-none">Gemini Notion Assistant</h1>
+            <h1 className="font-bold text-lg tracking-tight leading-none">Notion AI Assistant</h1>
             <div className="flex items-center gap-2 mt-1">
-              <p className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">Autonomous Workspace Agent</p>
+              <p className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">Intelligent Workspace Agent</p>
               {apiStatus && (
                 <div className="flex gap-1 items-center ml-2">
                   <div className={cn("w-1.5 h-1.5 rounded-full", apiStatus.hasGemini ? "bg-green-500" : "bg-red-500")} title="Gemini API" />
@@ -182,7 +182,7 @@ export default function App() {
               currentPage === "revi" ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"
             )}
           >
-            Revi
+            Insights
           </button>
           <div className="w-px h-4 bg-slate-200 mx-2" />
           <button 
@@ -251,15 +251,15 @@ export default function App() {
             {messages.length === 1 && !isLoading && (
               <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-xl px-4">
                 <div className="text-center mb-8">
-                  <h2 className="text-2xl font-bold text-slate-800 mb-2">What can I help you with today?</h2>
-                  <p className="text-slate-500">I can automate your Notion workspace using natural language.</p>
+                  <h2 className="text-2xl font-bold text-slate-800 mb-2">How can I help with your workspace?</h2>
+                  <p className="text-slate-500">I can manage your Notion pages and research information for you.</p>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   {[
-                    { icon: <Plus className="w-4 h-4" />, label: "Create a page about Edge Computing", prompt: "Create a structured page about Edge Computing with sections for Overview, Concepts, and Use Cases." },
-                    { icon: <Database className="w-4 h-4" />, label: "Create a task database", prompt: "Create a task database with columns for Task Name, Priority (Select), and Deadline (Date)." },
-                    { icon: <Search className="w-4 h-4" />, label: "Search my research notes", prompt: "Search for any pages related to 'AI research' in my workspace." },
-                    { icon: <ImageIcon className="w-4 h-4" />, label: "Generate an architecture diagram", prompt: "Generate an architecture diagram for a microservices system and add it to a new page." }
+                    { icon: <Plus className="w-4 h-4" />, label: "Create a new page", prompt: "Create a new page titled 'Project Brainstorm' with a brief outline for a new mobile app." },
+                    { icon: <Search className="w-4 h-4" />, label: "Research a topic", prompt: "Research the latest trends in sustainable architecture and summarize the key points." },
+                    { icon: <FileText className="w-4 h-4" />, label: "Add content to a page", prompt: "Search for my 'Meeting Notes' page and add a new section for 'Action Items'." },
+                    { icon: <Trash2 className="w-4 h-4" />, label: "Delete a page or text", prompt: "Find the page titled 'Old Draft' and archive it." }
                   ].map((action, i) => (
                     <button
                       key={i}
@@ -316,9 +316,9 @@ export default function App() {
               animate={{ opacity: 1, y: 0 }}
               className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm"
             >
-              <h2 className="text-3xl font-bold text-slate-800 mb-4">Revi Page</h2>
+              <h2 className="text-3xl font-bold text-slate-800 mb-4">Workspace Insights</h2>
               <p className="text-slate-600 mb-6 leading-relaxed">
-                Welcome to the Revi page. This is a dedicated space for reviewing your Notion workspace insights and AI-generated summaries.
+                Review your Notion workspace activity and AI-generated insights.
               </p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100">
