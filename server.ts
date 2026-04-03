@@ -188,8 +188,12 @@ export async function createServer() {
         }
       ];
 
+      // Optimize history: only keep last 6 messages to reduce token overhead and speed up processing
       const lastMessage = messages[messages.length - 1].content;
-      const history = messages.slice(0, -1).map(m => ({
+      const historyLimit = 6;
+      const recentMessages = messages.slice(-historyLimit - 1, -1);
+      
+      const history = recentMessages.map(m => ({
         role: m.role === "user" ? "user" : "model",
         parts: [{ text: m.content }]
       }));
@@ -205,6 +209,26 @@ export async function createServer() {
       - For images, use generate_image.
       - Once actions are complete, provide a very brief summary.`;
 
+      // Fast-path for simple greetings or short messages (less than 20 chars)
+      const isSimpleMessage = lastMessage.length < 20 && 
+        !lastMessage.toLowerCase().includes("notion") && 
+        !lastMessage.toLowerCase().includes("page") &&
+        !lastMessage.toLowerCase().includes("create") &&
+        !lastMessage.toLowerCase().includes("update");
+
+      if (isSimpleMessage) {
+        const fastResponse = await ai.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: [{ role: "user", parts: [{ text: lastMessage }] }],
+          config: {
+            systemInstruction: "You are a helpful assistant. Respond very briefly to greetings or simple chat.",
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
+          },
+        });
+        console.timeEnd("ChatRequest");
+        return res.json({ content: fastResponse.text || "Hello! How can I help you with Notion today?" });
+      }
+      
       // Agentic Loop
       let currentHistory = [
         ...history,
