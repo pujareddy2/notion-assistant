@@ -24,13 +24,34 @@ import {
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
+import { 
+  BarChart as RechartsBarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip as RechartsTooltip, 
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell
+} from "recharts";
+
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+const COLORS = ['#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899'];
+
 interface Message {
   role: "user" | "assistant";
   content: string;
+}
+
+interface ChartData {
+  type: "bar" | "pie";
+  title: string;
+  data: any[];
 }
 
 export default function App() {
@@ -40,9 +61,11 @@ export default function App() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
-  const [currentPage, setCurrentPage] = useState<"chat" | "revi">("chat");
+  const [currentPage, setCurrentPage] = useState<"chat" | "insights">("chat");
   const [error, setError] = useState<string | null>(null);
   const [apiStatus, setApiStatus] = useState<{ hasGemini: boolean; hasNotion: boolean; hasPageId: boolean } | null>(null);
+  const [chartData, setChartData] = useState<ChartData | null>(null);
+  const [knowledgeBase, setKnowledgeBase] = useState<{ title: string; summary: string }[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const checkHealth = async () => {
@@ -71,6 +94,27 @@ export default function App() {
     scrollToBottom();
   }, [messages]);
 
+  // Parse AI response for charts and knowledge base updates
+  useEffect(() => {
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage?.role === "assistant") {
+      // Look for JSON blocks
+      const jsonMatch = lastMessage.content.match(/```json\n([\s\S]*?)\n```/);
+      if (jsonMatch) {
+        try {
+          const data = JSON.parse(jsonMatch[1]);
+          if (data.type === "bar" || data.type === "pie") {
+            setChartData(data);
+          } else if (data.knowledge_base) {
+            setKnowledgeBase(prev => [...prev, ...data.knowledge_base]);
+          }
+        } catch (e) {
+          console.error("Failed to parse JSON from AI response", e);
+        }
+      }
+    }
+  }, [messages]);
+
   const handleRetry = async () => {
     if (messages.length < 2) return;
     const lastUserMessage = [...messages].reverse().find(m => m.role === "user");
@@ -78,13 +122,12 @@ export default function App() {
     
     setInput(lastUserMessage.content);
     setMessages(prev => prev.slice(0, prev.lastIndexOf(lastUserMessage)));
-    // handleSubmit will be called by the user or we can trigger it manually
   };
 
-  const fetchWithRetry = async (url: string, options: any, retries = 2, backoff = 3000): Promise<Response> => {
+  const fetchWithRetry = async (url: string, options: any, retries = 3, backoff = 5000): Promise<Response> => {
     try {
       const controller = new AbortController();
-      const id = setTimeout(() => controller.abort(), 45000); // 45s timeout
+      const id = setTimeout(() => controller.abort(), 60000); // 60s timeout
       
       const response = await fetch(url, {
         ...options,
@@ -187,10 +230,10 @@ export default function App() {
             Chat
           </button>
           <button 
-            onClick={() => setCurrentPage("revi")}
+            onClick={() => setCurrentPage("insights")}
             className={cn(
               "px-3 py-1.5 rounded-full text-sm font-medium transition-all",
-              currentPage === "revi" ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"
+              currentPage === "insights" ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"
             )}
           >
             Insights
@@ -350,24 +393,39 @@ export default function App() {
               animate={{ opacity: 1, y: 0 }}
               className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm"
             >
-              <h2 className="text-3xl font-bold text-slate-800 mb-4">Workspace Insights</h2>
-              <p className="text-slate-600 mb-6 leading-relaxed">
-                Review your Notion workspace activity and AI-generated insights.
-              </p>
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h2 className="text-3xl font-bold text-slate-800">Workspace Insights</h2>
+                  <p className="text-slate-500 text-sm">AI-generated analysis and visual representations.</p>
+                </div>
+                <button 
+                  onClick={() => { setKnowledgeBase([]); setChartData(null); }}
+                  className="text-xs text-slate-400 hover:text-red-500 transition-colors"
+                >
+                  Clear All
+                </button>
+              </div>
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100">
                   <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2">
                     <FileText className="w-4 h-4 text-indigo-600" />
                     Knowledge Base
                   </h3>
-                  <p className="text-sm text-slate-500 mb-4">AI-powered summaries of your workspace content.</p>
-                  <div className="space-y-3">
-                    <div className="bg-white p-3 rounded-xl border border-slate-200 text-xs text-slate-600">
-                      <strong>Project Alpha:</strong> Summary of key milestones and current blockers...
-                    </div>
-                    <div className="bg-white p-3 rounded-xl border border-slate-200 text-xs text-slate-600">
-                      <strong>Research Notes:</strong> Key findings on sustainable architecture...
-                    </div>
+                  <p className="text-xs text-slate-500 mb-4">Summaries extracted from your Notion pages.</p>
+                  <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2">
+                    {knowledgeBase.length > 0 ? (
+                      knowledgeBase.map((item, i) => (
+                        <div key={i} className="bg-white p-3 rounded-xl border border-slate-200 text-xs text-slate-600 shadow-sm">
+                          <strong className="block text-slate-800 mb-1">{item.title}</strong>
+                          <p className="leading-relaxed">{item.summary}</p>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-center py-8 text-slate-400 italic text-xs">
+                        No insights generated yet. Ask the AI to summarize pages or analyze your workspace.
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100">
@@ -375,16 +433,48 @@ export default function App() {
                     <BarChart className="w-4 h-4 text-indigo-600" />
                     Representations
                   </h3>
-                  <p className="text-sm text-slate-500 mb-4">Visual insights from your database records.</p>
-                  <div className="h-32 bg-white rounded-xl border border-slate-200 flex items-center justify-center">
-                    <div className="flex items-end gap-2 h-20">
-                      <div className="w-4 bg-indigo-200 h-1/2 rounded-t" />
-                      <div className="w-4 bg-indigo-400 h-3/4 rounded-t" />
-                      <div className="w-4 bg-indigo-600 h-full rounded-t" />
-                      <div className="w-4 bg-indigo-300 h-2/3 rounded-t" />
-                    </div>
+                  <p className="text-xs text-slate-500 mb-4">Visual data from your Notion databases.</p>
+                  <div className="h-[250px] bg-white rounded-xl border border-slate-200 p-4 flex flex-col items-center justify-center">
+                    {chartData ? (
+                      <>
+                        <h4 className="text-[10px] font-bold text-slate-400 mb-2 uppercase tracking-wider">{chartData.title}</h4>
+                        <ResponsiveContainer width="100%" height="100%">
+                          {chartData.type === "bar" ? (
+                            <RechartsBarChart data={chartData.data}>
+                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                              <XAxis dataKey="name" fontSize={10} tickLine={false} axisLine={false} />
+                              <YAxis fontSize={10} tickLine={false} axisLine={false} />
+                              <RechartsTooltip 
+                                contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', fontSize: '10px' }}
+                              />
+                              <Bar dataKey="value" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                            </RechartsBarChart>
+                          ) : (
+                            <PieChart>
+                              <Pie
+                                data={chartData.data}
+                                cx="50%"
+                                cy="50%"
+                                innerRadius={40}
+                                outerRadius={60}
+                                paddingAngle={5}
+                                dataKey="value"
+                              >
+                                {chartData.data.map((entry, index) => (
+                                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                ))}
+                              </Pie>
+                              <RechartsTooltip />
+                            </PieChart>
+                          )}
+                        </ResponsiveContainer>
+                      </>
+                    ) : (
+                      <div className="text-center py-8 text-slate-400 italic text-xs">
+                        No charts generated yet. Ask the AI to "generate a bar chart of my task status".
+                      </div>
+                    )}
                   </div>
-                  <p className="text-[10px] text-center text-slate-400 mt-2 italic">Task Distribution by Priority</p>
                 </div>
               </div>
             </motion.div>

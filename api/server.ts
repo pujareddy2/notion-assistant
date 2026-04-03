@@ -8,7 +8,7 @@ import { Client } from "@notionhq/client";
 // Helper for exponential backoff on Gemini API calls (503/429 errors)
 async function retryGenerateContent(ai: any, params: any) {
   const isServerless = !!(process.env.NETLIFY || process.env.VERCEL);
-  const maxRetries = isServerless ? 2 : 4;
+  const maxRetries = isServerless ? 3 : 5;
   let lastError;
   for (let i = 0; i < maxRetries; i++) {
     try {
@@ -20,18 +20,18 @@ async function retryGenerateContent(ai: any, params: any) {
     } catch (error: any) {
       lastError = error;
       const errorMsg = error.message || "";
+      const isQuotaError = errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED");
       const isRetryable = errorMsg.includes("503") || 
-                         errorMsg.includes("429") || 
-                         errorMsg.includes("RESOURCE_EXHAUSTED") ||
+                         isQuotaError || 
                          errorMsg.includes("UNAVAILABLE") ||
                          errorMsg.includes("high demand") ||
                          errorMsg.includes("overloaded");
       
       if (isRetryable && i < maxRetries - 1) {
-        // More aggressive backoff for 429s
-        const baseDelay = errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") ? 3000 : 1000;
-        const delay = Math.pow(2, i) * baseDelay + Math.random() * 1000;
-        console.warn(`[Chat API] Gemini busy/overloaded (attempt ${i + 1}/${maxRetries}). Retrying in ${Math.round(delay)}ms...`);
+        // More aggressive backoff for 429s (quota exceeded)
+        const baseDelay = isQuotaError ? 5000 : 1500;
+        const delay = Math.pow(2, i) * baseDelay + Math.random() * 2000;
+        console.warn(`[Chat API] Gemini busy/overloaded (attempt ${i + 1}/${maxRetries}). Retrying in ${Math.round(delay)}ms... Error: ${errorMsg.substring(0, 100)}`);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
@@ -209,6 +209,17 @@ export async function createServer() {
               }
             },
             {
+              name: "get_multiple_pages_content",
+              description: "Retrieve the content of multiple Notion pages at once for cross-page analysis.",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  page_ids: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Array of page IDs to fetch." }
+                },
+                required: ["page_ids"]
+              }
+            },
+            {
               name: "search_notion",
               description: "Search for pages or databases in Notion.",
               parameters: {
@@ -270,21 +281,35 @@ export async function createServer() {
 
       const systemInstruction = `You are Notion AI, the ultimate workspace assistant.
       Your capabilities include:
-      1. **Database Management**: Create databases, add/update rows, query with filters, and sort results.
+      1. **Database Management**: Create databases automatically, add/update rows, query with filters, and sort results.
       2. **Page Operations**: Create/delete pages, add/delete specific text blocks.
-      3. **Rich Content Support**: Support headings, bullet lists, toggle lists, tables, code blocks, and checklists.
-      4. **Content Transformation**: Summarize long pages, extract key ideas, convert notes to bullet points, and turn meeting notes into action items.
-      5. **Research & Inference**: Use 'googleSearch' for real-time research and generate summaries/inferences from workspace data.
-      6. **Representations**: Generate structured data for graphs or visual representations when requested.
+      3. **Rich Content Support**: You MUST use these block types when creating/updating content:
+         - 'heading_1', 'heading_2', 'heading_3'
+         - 'bulleted_list_item', 'numbered_list_item'
+         - 'to_do' (checklists)
+         - 'toggle' (toggle lists)
+         - 'code' (code blocks)
+         - 'table' (tables)
+         - 'callout', 'quote'
+      4. **Content Transformation**: 
+         - Summarize long pages or meeting notes.
+         - Extract key ideas into bullet points.
+         - Convert notes into action items (checklists).
+         - Convert unstructured text into structured databases.
+      5. **Research & Inference**: Use 'googleSearch' for real-time research. Generate summaries and inferences from workspace data.
+      6. **Representations**: Generate structured data for graphs or visual representations when requested. 
+         - For charts, output a JSON block like: \`\`\`json { "type": "bar", "title": "Tasks by Status", "data": [{ "name": "Done", "value": 5 }, { "name": "In Progress", "value": 3 }] } \`\`\`
+         - For knowledge base entries, output: \`\`\`json { "knowledge_base": [{ "title": "Project Summary", "summary": "..." }] } \`\`\`
 
       Guidelines:
       - parent_id: ${notionPageId}
       - Be professional, highly efficient, and proactive.
       - When summarizing, be concise but thorough.
-      - For "action items", use checklists.
-      - For "key ideas", use bullet points or callouts.
-      - If a user asks for a "graph", provide a structured JSON representation in your text response that the UI can interpret.
-      - Always confirm successful operations with a brief summary.`;
+      - For "action items", use 'to_do' blocks.
+      - For "key ideas", use 'bulleted_list_item' or 'callout' blocks.
+      - If a user asks for a "graph", provide the JSON representation as shown above.
+      - Always confirm successful operations with a brief summary.
+      - If you hit a quota error, apologize and suggest the user wait a few seconds before retrying.`;
 
       // Fast-path for simple greetings or short messages (less than 20 chars)
       const isSimpleMessage = lastMessage.length < 20 && 
@@ -387,6 +412,18 @@ export async function createServer() {
                   filter: args.filter as any,
                   sorts: args.sorts as any
                 });
+                break;
+              case "get_multiple_pages_content":
+                const pageIds = args.page_ids as string[];
+                const pageContents = await Promise.all(pageIds.map(async (id) => {
+                  try {
+                    const blocks = await notion.blocks.children.list({ block_id: id });
+                    return { page_id: id, content: blocks.results };
+                  } catch (e) {
+                    return { page_id: id, error: "Failed to fetch content" };
+                  }
+                }));
+                result = pageContents;
                 break;
               case "search_notion":
                 result = await notion.search({
