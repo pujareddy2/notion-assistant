@@ -42,9 +42,8 @@ async function startServer() {
 
     try {
       const geminiApiKey = (
-        (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim()) || 
-        (process.env.API_KEY && process.env.API_KEY.trim()) || 
-        (process.env.NEXT_PUBLIC_GEMINI_API_KEY && process.env.NEXT_PUBLIC_GEMINI_API_KEY.trim()) || 
+        process.env.GEMINI_API_KEY || 
+        process.env.API_KEY || 
         ""
       ).trim();
       
@@ -53,7 +52,7 @@ async function startServer() {
 
       if (!geminiApiKey || !notionApiKey || !notionPageId) {
         return res.status(500).json({ 
-          error: "Missing API keys. Please ensure GEMINI_API_KEY, NOTION_API_KEY, and NOTION_PAGE_ID are set."
+          error: "Missing API keys. Please ensure GEMINI_API_KEY, NOTION_API_KEY, and NOTION_PAGE_ID are set in your environment variables."
         });
       }
 
@@ -316,17 +315,14 @@ async function startServer() {
                   model: "gemini-2.5-flash-image",
                   contents: args.prompt as string
                 });
-                let imageUrl = "";
+                let base64Image = "";
                 for (const part of imgResponse.candidates[0].content.parts) {
                   if (part.inlineData) {
-                    const fileName = `img_${Date.now()}.png`;
-                    const filePath = path.join(GENERATED_DIR, fileName);
-                    fs.writeFileSync(filePath, Buffer.from(part.inlineData.data, "base64"));
-                    imageUrl = `${req.protocol}://${req.get("host")}/generated/${fileName}`;
+                    base64Image = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
                     break;
                   }
                 }
-                result = { imageUrl };
+                result = { imageUrl: base64Image };
                 break;
               default:
                 result = { error: "Unknown tool" };
@@ -354,6 +350,19 @@ async function startServer() {
         turnCount++;
       }
 
+      // If we exited the loop due to MAX_TURNS, get a final summary
+      if (turnCount === MAX_TURNS && !finalResponseText) {
+        const finalResponse = await ai.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: currentHistory,
+          config: {
+            systemInstruction: "You have reached the maximum number of turns. Please provide a final summary of what you have accomplished so far and any errors encountered.",
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }
+          },
+        });
+        finalResponseText = finalResponse.text || "I've reached the maximum number of steps for this task. Please check your Notion workspace for the results.";
+      }
+
       // Final cleanup and timing
       const elapsedTime = Date.now() - startTime;
       if (elapsedTime < 10000) {
@@ -368,8 +377,7 @@ async function startServer() {
     }
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
+  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -383,9 +391,13 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  if (!process.env.VERCEL) {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }
+
+  return app;
 }
 
-startServer();
+export const app = startServer();

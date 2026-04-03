@@ -1,51 +1,40 @@
-# Gemini Notion Sync
+# AI Notion Assistant Deployment Guide
 
-Automatically generate structured Notion pages from text prompts using Google Gemini AI.
+This guide will help you deploy your AI Notion Assistant to Vercel or Netlify.
 
-## Setup Instructions
+## Environment Variables
 
-### 1. Google Gemini API Key
-- Go to [Google AI Studio](https://aistudio.google.com/app/apikey).
-- Create a new API key.
-- In this app (AI Studio Build), click the **Secrets** panel (bottom left or top right gear icon).
-- Add a secret named `GEMINI_API_KEY` and paste your key.
+You MUST set the following environment variables in your deployment platform:
 
-### 2. Notion Integration
-- Go to [Notion My Integrations](https://www.notion.so/my-integrations).
-- Click **+ New integration**.
-- Give it a name (e.g., "Gemini Sync") and select the workspace.
-- Copy the **Internal Integration Token**.
-- Add a secret named `NOTION_API_KEY` in AI Studio with this token.
+- `GEMINI_API_KEY`: Your Google Gemini API Key.
+- `NOTION_API_KEY`: Your Notion Internal Integration Token.
+- `NOTION_PAGE_ID`: The ID of the parent Notion page.
 
-### 3. Notion Page ID
-- Open the Notion page where you want new notes to be created.
-- Copy the ID from the URL. It's the 32-character string at the end of the URL (e.g., `https://www.notion.so/My-Page-8f7...`).
-- Add a secret named `NOTION_PAGE_ID` in AI Studio with this ID.
+## Vercel Deployment
 
-### 4. Share Page with Integration
-- In Notion, go to your target page.
-- Click the **"..."** (top right) -> **Add connections**.
-- Search for your integration name and select it.
+1.  Connect your GitHub repository to Vercel.
+2.  Add the environment variables listed above.
+3.  Vercel should automatically detect the Vite project.
+4.  The `vercel.json` file is already configured to handle the Express backend.
+
+## Netlify Deployment
+
+1.  Connect your GitHub repository to Netlify.
+2.  Set the build command to `npm run build`.
+3.  Set the publish directory to `dist`.
+4.  Add the environment variables.
+5.  (Optional) You may need to adapt the backend to Netlify Functions if you want a full-stack experience on Netlify.
 
 ## Local Development
 
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
-2. Create a `.env` file in the root directory:
-   ```env
-   GEMINI_API_KEY=your_gemini_key
-   NOTION_API_KEY=your_notion_secret
-   NOTION_PAGE_ID=your_notion_page_id
-   ```
-3. Run the development server:
-   ```bash
-   npm run dev
-   ```
+```bash
+npm install
+npm run dev
+```
 
-## Troubleshooting
+## Features
 
-- **API key not valid**: Ensure you have copied the key correctly and it is set in the **Secrets** panel.
-- **Could not find page**: Ensure you have shared the Notion page with your integration.
-- **Missing permissions**: Ensure your Notion integration has "Insert content" and "Update content" capabilities enabled.
+- **Autonomous Agent**: Multi-turn reasoning loop for complex tasks.
+- **Fast Response**: Optimized with Gemini Flash and parallel execution.
+- **Image Generation**: Generate and embed images directly into Notion.
+- **Robust Error Handling**: Self-correcting agentic behavior.

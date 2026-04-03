@@ -39,6 +39,7 @@ export default function App() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -57,6 +58,7 @@ export default function App() {
     setMessages(prev => [...prev, userMessage]);
     setInput("");
     setIsLoading(true);
+    setError(null);
 
     try {
       const response = await fetch("/api/chat", {
@@ -67,11 +69,13 @@ export default function App() {
 
       const data = await response.json();
       if (data.error) {
-        setMessages(prev => [...prev, { role: "assistant", content: `Error: ${data.error}` }]);
+        setError(data.error);
+        setMessages(prev => [...prev, { role: "assistant", content: `**Error:** ${data.error}` }]);
       } else {
         setMessages(prev => [...prev, { role: "assistant", content: data.content }]);
       }
-    } catch (error: any) {
+    } catch (err: any) {
+      setError("Failed to connect to the server. Please check your connection.");
       setMessages(prev => [...prev, { role: "assistant", content: "Failed to connect to the server." }]);
     } finally {
       setIsLoading(false);
