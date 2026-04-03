@@ -263,6 +263,7 @@ export async function createServer() {
           config: {
             systemInstruction,
             tools: tools,
+            maxOutputTokens: 1000,
             thinkingConfig: { thinkingLevel: (process.env.VERCEL || process.env.NETLIFY) ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW }
           },
         });

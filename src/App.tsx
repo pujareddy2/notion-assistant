@@ -50,6 +50,38 @@ export default function App() {
     scrollToBottom();
   }, [messages]);
 
+  const fetchWithRetry = async (url: string, options: any, retries = 2, backoff = 1000): Promise<Response> => {
+    try {
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), 15000); // 15s timeout
+      
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      
+      clearTimeout(id);
+
+      if (response.status === 504 && retries > 0) {
+        console.warn(`504 Gateway Timeout for ${url}. Retrying in ${backoff}ms...`);
+        await new Promise(res => setTimeout(res, backoff));
+        return fetchWithRetry(url, options, retries - 1, backoff * 1.5);
+      }
+      
+      return response;
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        throw new Error("Request timed out. The server is taking too long to respond.");
+      }
+      if (retries > 0) {
+        console.warn(`Request failed for ${url}. Retrying in ${backoff}ms...`, error);
+        await new Promise(res => setTimeout(res, backoff));
+        return fetchWithRetry(url, options, retries - 1, backoff * 1.5);
+      }
+      throw error;
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
@@ -61,11 +93,19 @@ export default function App() {
     setError(null);
 
     try {
-      const response = await fetch("/api/chat", {
+      const response = await fetchWithRetry("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: [...messages, userMessage] }),
       });
+
+      if (!response.ok) {
+        if (response.status === 504) {
+          throw new Error("The server timed out. This usually happens when Notion or the AI model is slow. Please try a simpler request.");
+        }
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Server error: ${response.status}`);
+      }
 
       const data = await response.json();
       if (data.error) {
@@ -75,8 +115,9 @@ export default function App() {
         setMessages(prev => [...prev, { role: "assistant", content: data.content }]);
       }
     } catch (err: any) {
-      setError("Failed to connect to the server. Please check your connection.");
-      setMessages(prev => [...prev, { role: "assistant", content: "Failed to connect to the server." }]);
+      const errorMessage = err.message || "Failed to connect to the server.";
+      setError(errorMessage);
+      setMessages(prev => [...prev, { role: "assistant", content: `**Connection Error:** ${errorMessage}` }]);
     } finally {
       setIsLoading(false);
     }
