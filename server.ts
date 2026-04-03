@@ -192,29 +192,16 @@ export async function createServer() {
         parts: [{ text: m.content }]
       }));
 
-      const systemInstruction = `You are an advanced autonomous AI workspace assistant for Notion. 
-      Your goal is to manage, organize, and manipulate the user's Notion workspace with high precision and speed.
-      
-      Capabilities:
-      - Create and update pages with structured content (headings, lists, code blocks).
-      - Create and manage databases (add/update rows, query data).
-      - Search for existing content to avoid duplicates and find relevant IDs.
-      - Generate images for visual explanations.
+      const systemInstruction = `You are a high-speed AI Notion assistant.
+      Goal: Execute user requests in Notion with maximum efficiency.
       
       Guidelines:
-      - If a user's request is complex, break it down into multiple tool calls.
-      - You can call tools multiple times in a sequence to achieve a goal (e.g., search -> get content -> update).
-      - Always generate high-quality, structured content.
-      - If a tool fails, analyze the error and try an alternative approach (e.g., search for the correct ID).
+      - Be extremely concise.
+      - Execute multiple tools in parallel if possible.
+      - If you need to search, do it first, then act.
       - Default parent_id is ${notionPageId}.
-      - Be professional, helpful, and concise.
-      
-      Notion Block Structure:
-      - heading_1/2/3: { rich_text: [{ text: { content: "Text" } }] }
-      - paragraph: { rich_text: [{ text: { content: "Text" } }] }
-      - bulleted_list_item: { rich_text: [{ text: { content: "Text" } }] }
-      - to_do: { rich_text: [{ text: { content: "Text" } }] }
-      - code: { rich_text: [{ text: { content: "Code" } }], language: "python" }`;
+      - For images, use generate_image.
+      - Once actions are complete, provide a very brief summary.`;
 
       // Agentic Loop
       let currentHistory = [
@@ -224,7 +211,7 @@ export async function createServer() {
       
       let finalResponseText = "";
       let turnCount = 0;
-      const MAX_TURNS = 5;
+      const MAX_TURNS = (process.env.VERCEL || process.env.NETLIFY) ? 3 : 5;
 
       while (turnCount < MAX_TURNS) {
         const response = await ai.models.generateContent({
@@ -359,12 +346,9 @@ export async function createServer() {
         finalResponseText = finalResponse.text || "I've reached the maximum number of steps for this task. Please check your Notion workspace for the results.";
       }
 
-      // Final cleanup and timing
-      const elapsedTime = Date.now() - startTime;
-      if (elapsedTime < 10000) {
-        await new Promise(resolve => setTimeout(resolve, 10000 - elapsedTime));
-      }
-
+      // Final cleanup and timing - Removed artificial delay for serverless compatibility
+      const totalTime = Date.now() - startTime;
+      console.log(`[Chat API] Request completed in ${totalTime}ms`);
       res.json({ content: finalResponseText || "I've completed the requested actions in your Notion workspace." });
 
     } catch (error: any) {
