@@ -1,0 +1,5 @@
+{
+  "name": "Gemini Notion Assistant",
+  "description": "An autonomous AI workspace assistant that manages, organizes, and manipulates your Notion workspace using natural language prompts.",
+  "requestFramePermissions": []
+}
