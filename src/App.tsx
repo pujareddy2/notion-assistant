@@ -39,8 +39,28 @@ export default function App() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
+  const [currentPage, setCurrentPage] = useState<"chat" | "revi">("chat");
   const [error, setError] = useState<string | null>(null);
+  const [apiStatus, setApiStatus] = useState<{ hasGemini: boolean; hasNotion: boolean; hasPageId: boolean } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const checkHealth = async () => {
+    try {
+      const res = await fetch("/api/health");
+      if (res.ok) {
+        const data = await res.json();
+        setApiStatus(data.env);
+      }
+    } catch (e) {
+      console.error("Health check failed:", e);
+    }
+  };
+
+  useEffect(() => {
+    checkHealth();
+    const interval = setInterval(checkHealth, 30000); // Check every 30s
+    return () => clearInterval(interval);
+  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -133,127 +153,193 @@ export default function App() {
           </div>
           <div>
             <h1 className="font-bold text-lg tracking-tight leading-none">Gemini Notion Assistant</h1>
-            <p className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold mt-1">Autonomous Workspace Agent</p>
+            <div className="flex items-center gap-2 mt-1">
+              <p className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">Autonomous Workspace Agent</p>
+              {apiStatus && (
+                <div className="flex gap-1 items-center ml-2">
+                  <div className={cn("w-1.5 h-1.5 rounded-full", apiStatus.hasGemini ? "bg-green-500" : "bg-red-500")} title="Gemini API" />
+                  <div className={cn("w-1.5 h-1.5 rounded-full", apiStatus.hasNotion ? "bg-green-500" : "bg-red-500")} title="Notion API" />
+                  <div className={cn("w-1.5 h-1.5 rounded-full", apiStatus.hasPageId ? "bg-green-500" : "bg-red-500")} title="Notion Page ID" />
+                </div>
+              )}
+            </div>
           </div>
         </div>
-        <button 
-          onClick={() => setShowSetup(true)}
-          className="flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-indigo-600 transition-colors bg-slate-100 hover:bg-slate-200 px-4 py-2 rounded-full"
-        >
-          <Settings className="w-4 h-4" />
-          Setup
-        </button>
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={() => setCurrentPage("chat")}
+            className={cn(
+              "px-3 py-1.5 rounded-full text-sm font-medium transition-all",
+              currentPage === "chat" ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"
+            )}
+          >
+            Chat
+          </button>
+          <button 
+            onClick={() => setCurrentPage("revi")}
+            className={cn(
+              "px-3 py-1.5 rounded-full text-sm font-medium transition-all",
+              currentPage === "revi" ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"
+            )}
+          >
+            Revi
+          </button>
+          <div className="w-px h-4 bg-slate-200 mx-2" />
+          <button 
+            onClick={() => setShowSetup(true)}
+            className="flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-indigo-600 transition-colors bg-slate-100 hover:bg-slate-200 px-4 py-2 rounded-full"
+          >
+            <Settings className="w-4 h-4" />
+            Setup
+          </button>
+        </div>
       </header>
 
-      {/* Main Chat Area */}
-      <main className="flex-grow overflow-y-auto px-4 py-8 flex flex-col items-center relative">
-        <div className="w-full max-w-3xl space-y-6">
-          {messages.map((msg, idx) => (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              key={idx}
-              className={cn(
-                "flex gap-4 w-full",
-                msg.role === "user" ? "flex-row-reverse" : "flex-row"
+      {/* Main Content */}
+      {currentPage === "chat" ? (
+        <>
+          {/* Main Chat Area */}
+          <main className="flex-grow overflow-y-auto px-4 py-8 flex flex-col items-center relative">
+            <div className="w-full max-w-3xl space-y-6">
+              {messages.map((msg, idx) => (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  key={idx}
+                  className={cn(
+                    "flex gap-4 w-full",
+                    msg.role === "user" ? "flex-row-reverse" : "flex-row"
+                  )}
+                >
+                  <div className={cn(
+                    "w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-1 shadow-sm",
+                    msg.role === "user" ? "bg-indigo-600" : "bg-white border border-slate-200"
+                  )}>
+                    {msg.role === "user" ? (
+                      <User className="w-4 h-4 text-white" />
+                    ) : (
+                      <Bot className="w-4 h-4 text-indigo-600" />
+                    )}
+                  </div>
+                  <div className={cn(
+                    "max-w-[85%] p-4 rounded-2xl shadow-sm",
+                    msg.role === "user" 
+                      ? "bg-indigo-600 text-white rounded-tr-none" 
+                      : "bg-white border border-slate-200 text-slate-800 rounded-tl-none"
+                  )}>
+                    <div className={cn("markdown-body", msg.role === "user" && "text-white")}>
+                      <ReactMarkdown>{msg.content}</ReactMarkdown>
+                    </div>
+                  </div>
+                </motion.div>
+              ))}
+              {isLoading && (
+                <div className="flex gap-4 w-full">
+                  <div className="w-8 h-8 rounded-full bg-white border border-slate-200 flex items-center justify-center flex-shrink-0 mt-1 animate-pulse">
+                    <Bot className="w-4 h-4 text-indigo-400" />
+                  </div>
+                  <div className="bg-white border border-slate-200 p-4 rounded-2xl rounded-tl-none shadow-sm flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+                    <span className="text-sm text-slate-500 font-medium italic">Assistant is thinking...</span>
+                  </div>
+                </div>
               )}
-            >
-              <div className={cn(
-                "w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-1 shadow-sm",
-                msg.role === "user" ? "bg-indigo-600" : "bg-white border border-slate-200"
-              )}>
-                {msg.role === "user" ? (
-                  <User className="w-4 h-4 text-white" />
-                ) : (
-                  <Bot className="w-4 h-4 text-indigo-600" />
-                )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Quick Actions */}
+            {messages.length === 1 && !isLoading && (
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-xl px-4">
+                <div className="text-center mb-8">
+                  <h2 className="text-2xl font-bold text-slate-800 mb-2">What can I help you with today?</h2>
+                  <p className="text-slate-500">I can automate your Notion workspace using natural language.</p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {[
+                    { icon: <Plus className="w-4 h-4" />, label: "Create a page about Edge Computing", prompt: "Create a structured page about Edge Computing with sections for Overview, Concepts, and Use Cases." },
+                    { icon: <Database className="w-4 h-4" />, label: "Create a task database", prompt: "Create a task database with columns for Task Name, Priority (Select), and Deadline (Date)." },
+                    { icon: <Search className="w-4 h-4" />, label: "Search my research notes", prompt: "Search for any pages related to 'AI research' in my workspace." },
+                    { icon: <ImageIcon className="w-4 h-4" />, label: "Generate an architecture diagram", prompt: "Generate an architecture diagram for a microservices system and add it to a new page." }
+                  ].map((action, i) => (
+                    <button
+                      key={i}
+                      onClick={() => setInput(action.prompt)}
+                      className="bg-white border border-slate-200 p-4 rounded-xl hover:border-indigo-400 hover:shadow-md transition-all text-left flex items-start gap-3 group"
+                    >
+                      <div className="bg-slate-50 p-2 rounded-lg group-hover:bg-indigo-50 transition-colors">
+                        {React.cloneElement(action.icon as React.ReactElement<{ className?: string }>, { className: "w-4 h-4 text-slate-600 group-hover:text-indigo-600" })}
+                      </div>
+                      <span className="text-sm font-medium text-slate-700">{action.label}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className={cn(
-                "max-w-[85%] p-4 rounded-2xl shadow-sm",
-                msg.role === "user" 
-                  ? "bg-indigo-600 text-white rounded-tr-none" 
-                  : "bg-white border border-slate-200 text-slate-800 rounded-tl-none"
-              )}>
-                <div className={cn("markdown-body", msg.role === "user" && "text-white")}>
-                  <ReactMarkdown>{msg.content}</ReactMarkdown>
+            )}
+          </main>
+
+          {/* Input Area */}
+          <div className="bg-white border-t border-slate-200 p-4 flex-shrink-0 z-20">
+            <div className="max-w-3xl mx-auto flex items-end gap-3">
+              <form onSubmit={handleSubmit} className="flex-grow relative">
+                <textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSubmit(e);
+                    }
+                  }}
+                  placeholder="Type your instruction for Notion..."
+                  className="w-full min-h-[56px] max-h-32 p-4 pr-12 rounded-2xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all resize-none text-slate-700 leading-relaxed bg-slate-50"
+                  disabled={isLoading}
+                />
+                <button
+                  type="submit"
+                  disabled={isLoading || !input.trim()}
+                  className="absolute right-3 bottom-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white p-2 rounded-xl transition-all shadow-lg shadow-indigo-200 active:scale-95"
+                >
+                  <Send className="w-5 h-5" />
+                </button>
+              </form>
+            </div>
+            <p className="text-[10px] text-center text-slate-400 mt-2">
+              Press Enter to send • Shift + Enter for new line
+            </p>
+          </div>
+        </>
+      ) : (
+        <main className="flex-grow overflow-y-auto px-4 py-8 flex flex-col items-center">
+          <div className="w-full max-w-3xl">
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm"
+            >
+              <h2 className="text-3xl font-bold text-slate-800 mb-4">Revi Page</h2>
+              <p className="text-slate-600 mb-6 leading-relaxed">
+                Welcome to the Revi page. This is a dedicated space for reviewing your Notion workspace insights and AI-generated summaries.
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100">
+                  <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-indigo-600" />
+                    Recent Activity
+                  </h3>
+                  <p className="text-sm text-slate-500">Track your latest Notion updates and AI interactions here.</p>
+                </div>
+                <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100">
+                  <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2">
+                    <Search className="w-4 h-4 text-indigo-600" />
+                    Workspace Insights
+                  </h3>
+                  <p className="text-sm text-slate-500">AI-powered analysis of your Notion content and structure.</p>
                 </div>
               </div>
             </motion.div>
-          ))}
-          {isLoading && (
-            <div className="flex gap-4 w-full">
-              <div className="w-8 h-8 rounded-full bg-white border border-slate-200 flex items-center justify-center flex-shrink-0 mt-1 animate-pulse">
-                <Bot className="w-4 h-4 text-indigo-400" />
-              </div>
-              <div className="bg-white border border-slate-200 p-4 rounded-2xl rounded-tl-none shadow-sm flex items-center gap-2">
-                <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
-                <span className="text-sm text-slate-500 font-medium italic">Assistant is thinking...</span>
-              </div>
-            </div>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
-
-        {/* Quick Actions */}
-        {messages.length === 1 && !isLoading && (
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-xl px-4">
-            <div className="text-center mb-8">
-              <h2 className="text-2xl font-bold text-slate-800 mb-2">What can I help you with today?</h2>
-              <p className="text-slate-500">I can automate your Notion workspace using natural language.</p>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {[
-                { icon: <Plus className="w-4 h-4" />, label: "Create a page about Edge Computing", prompt: "Create a structured page about Edge Computing with sections for Overview, Concepts, and Use Cases." },
-                { icon: <Database className="w-4 h-4" />, label: "Create a task database", prompt: "Create a task database with columns for Task Name, Priority (Select), and Deadline (Date)." },
-                { icon: <Search className="w-4 h-4" />, label: "Search my research notes", prompt: "Search for any pages related to 'AI research' in my workspace." },
-                { icon: <ImageIcon className="w-4 h-4" />, label: "Generate an architecture diagram", prompt: "Generate an architecture diagram for a microservices system and add it to a new page." }
-              ].map((action, i) => (
-                <button
-                  key={i}
-                  onClick={() => setInput(action.prompt)}
-                  className="bg-white border border-slate-200 p-4 rounded-xl hover:border-indigo-400 hover:shadow-md transition-all text-left flex items-start gap-3 group"
-                >
-                  <div className="bg-slate-50 p-2 rounded-lg group-hover:bg-indigo-50 transition-colors">
-                    {React.cloneElement(action.icon as React.ReactElement<{ className?: string }>, { className: "w-4 h-4 text-slate-600 group-hover:text-indigo-600" })}
-                  </div>
-                  <span className="text-sm font-medium text-slate-700">{action.label}</span>
-                </button>
-              ))}
-            </div>
           </div>
-        )}
-      </main>
-
-      {/* Input Area */}
-      <div className="bg-white border-t border-slate-200 p-4 flex-shrink-0 z-20">
-        <div className="max-w-3xl mx-auto flex items-end gap-3">
-          <form onSubmit={handleSubmit} className="flex-grow relative">
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSubmit(e);
-                }
-              }}
-              placeholder="Type your instruction for Notion..."
-              className="w-full min-h-[56px] max-h-32 p-4 pr-12 rounded-2xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all resize-none text-slate-700 leading-relaxed bg-slate-50"
-              disabled={isLoading}
-            />
-            <button
-              type="submit"
-              disabled={isLoading || !input.trim()}
-              className="absolute right-3 bottom-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white p-2 rounded-xl transition-all shadow-lg shadow-indigo-200 active:scale-95"
-            >
-              <Send className="w-5 h-5" />
-            </button>
-          </form>
-        </div>
-        <p className="text-[10px] text-center text-slate-400 mt-2">
-          Press Enter to send • Shift + Enter for new line
-        </p>
-      </div>
+        </main>
+      )}
 
       {/* Setup Modal */}
       <AnimatePresence>

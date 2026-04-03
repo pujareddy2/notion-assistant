@@ -5,6 +5,33 @@ import dotenv from "dotenv";
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { Client } from "@notionhq/client";
 
+// Helper for exponential backoff on Gemini API calls (503/429 errors)
+async function retryGenerateContent(ai: any, params: any, maxRetries = 3) {
+  let lastError;
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await ai.models.generateContent(params);
+    } catch (error: any) {
+      lastError = error;
+      const errorMsg = error.message || "";
+      const isRetryable = errorMsg.includes("503") || 
+                         errorMsg.includes("429") || 
+                         errorMsg.includes("UNAVAILABLE") ||
+                         errorMsg.includes("high demand") ||
+                         errorMsg.includes("overloaded");
+      
+      if (isRetryable && i < maxRetries - 1) {
+        const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
+        console.warn(`[Chat API] Gemini busy/overloaded (attempt ${i + 1}/${maxRetries}). Retrying in ${Math.round(delay)}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError;
+}
+
 const envResult = dotenv.config({ override: true });
 if (envResult.error) {
   console.error("Dotenv Error:", envResult.error);
@@ -48,10 +75,10 @@ export async function createServer() {
         process.env.GEMINI_API_KEY || 
         process.env.API_KEY || 
         ""
-      ).trim();
+      ).trim().replace(/^["']|["']$/g, ""); // Remove potential quotes
       
-      const notionApiKey = (process.env.NOTION_API_KEY || "").trim();
-      const notionPageId = (process.env.NOTION_PAGE_ID || "").trim();
+      const notionApiKey = (process.env.NOTION_API_KEY || "").trim().replace(/^["']|["']$/g, "");
+      const notionPageId = (process.env.NOTION_PAGE_ID || "").trim().replace(/^["']|["']$/g, "");
 
       console.log(`[Chat API] Key Check: Gemini=${!!geminiApiKey}, Notion=${!!notionApiKey}, PageId=${!!notionPageId}`);
       if (geminiApiKey) console.log(`[Chat API] Gemini Key starts with: ${geminiApiKey.substring(0, 5)}...`);
@@ -216,16 +243,13 @@ export async function createServer() {
         parts: [{ text: m.content }]
       }));
 
-      const systemInstruction = `You are a high-speed AI Notion assistant.
-      Goal: Execute user requests in Notion with maximum efficiency.
-      
-      Guidelines:
-      - Be extremely concise.
-      - Execute multiple tools in parallel if possible.
-      - If you need to search, do it first, then act.
-      - Default parent_id is ${notionPageId}.
-      - For images, use generate_image.
-      - Once actions are complete, provide a very brief summary.`;
+      const systemInstruction = `You are a high-speed Notion AI.
+      - parent_id: ${notionPageId}
+      - Be extremely brief.
+      - Parallelize tools.
+      - Search first if needed.
+      - Use generate_image for images.
+      - Summarize briefly after actions.`;
 
       // Fast-path for simple greetings or short messages (less than 20 chars)
       const isSimpleMessage = lastMessage.length < 20 && 
@@ -235,11 +259,11 @@ export async function createServer() {
         !lastMessage.toLowerCase().includes("update");
 
       if (isSimpleMessage) {
-        const fastResponse = await ai.models.generateContent({
+        const fastResponse = await retryGenerateContent(ai, {
           model: "gemini-3-flash-preview",
           contents: [{ role: "user", parts: [{ text: lastMessage }] }],
           config: {
-            systemInstruction: "You are a helpful assistant. Respond very briefly to greetings or simple chat.",
+            systemInstruction: "Briefly respond to greetings or short chat.",
             thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
           },
         });
@@ -260,14 +284,14 @@ export async function createServer() {
       while (turnCount < MAX_TURNS) {
         console.log(`[Chat API] Starting turn ${turnCount + 1}/${MAX_TURNS}`);
         console.time(`Turn ${turnCount + 1}`);
-        const response = await ai.models.generateContent({
+        const response = await retryGenerateContent(ai, {
           model: "gemini-3-flash-preview",
           contents: currentHistory,
           config: {
             systemInstruction,
             tools: tools,
-            maxOutputTokens: 1000,
-            thinkingConfig: { thinkingLevel: (process.env.VERCEL || process.env.NETLIFY) ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW }
+            maxOutputTokens: 800,
+            thinkingConfig: { thinkingLevel: (process.env.NETLIFY || process.env.VERCEL) ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW }
           },
         });
         console.timeEnd(`Turn ${turnCount + 1}`);
