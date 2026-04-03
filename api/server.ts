@@ -116,6 +116,71 @@ function buildCacheKey(messages: Array<{ role: "user" | "assistant"; content: st
   return createHash("sha256").update(payload).digest("hex");
 }
 
+function getPlainTextFromRichTextArray(richText: any[] | undefined): string {
+  if (!Array.isArray(richText)) return "";
+  return richText
+    .map((item: any) => item?.plain_text || item?.text?.content || "")
+    .join("")
+    .trim();
+}
+
+function extractPageTitle(result: any): string {
+  if (!result || result.object !== "page") return "";
+  const propMap = result.properties || {};
+  for (const key of Object.keys(propMap)) {
+    const prop = propMap[key];
+    if (prop?.type === "title") {
+      return getPlainTextFromRichTextArray(prop.title);
+    }
+  }
+  return "";
+}
+
+async function findPageByReference(notion: Client, reference: string): Promise<{ id: string; title: string } | null> {
+  const cleaned = reference.replace(/^@/, "").trim();
+  if (!cleaned) return null;
+
+  const result = await notion.search({
+    query: cleaned,
+    filter: { value: "page", property: "object" } as any,
+    page_size: 20
+  });
+
+  const pages = (result.results || [])
+    .filter((r: any) => r.object === "page")
+    .map((r: any) => ({ id: r.id as string, title: extractPageTitle(r) }))
+    .filter((r: any) => r.id);
+
+  if (pages.length === 0) return null;
+
+  const exact = pages.find((p: any) => p.title.toLowerCase() === cleaned.toLowerCase());
+  if (exact) return exact;
+
+  const partial = pages.find((p: any) => p.title.toLowerCase().includes(cleaned.toLowerCase()));
+  if (partial) return partial;
+
+  return pages[0];
+}
+
+async function resolvePageId(
+  notion: Client,
+  args: any,
+  defaultPageId: string
+): Promise<{ pageId: string; resolvedTitle?: string }> {
+  if (args?.page_id && String(args.page_id).trim().length > 0) {
+    return { pageId: String(args.page_id).trim() };
+  }
+
+  const candidateRef = String(args?.page_reference || args?.page_name || "").trim();
+  if (candidateRef) {
+    const page = await findPageByReference(notion, candidateRef);
+    if (page) return { pageId: page.id, resolvedTitle: page.title };
+    throw new Error(`Could not find a Notion page matching reference: ${candidateRef}`);
+  }
+
+  return { pageId: defaultPageId };
+}
+
 function isActionIntent(prompt: string): boolean {
   return /(create|add|append|insert|update|edit|modify|delete|remove|archive|extract|summari[sz]e|research|search|find|database|table|page|notion)/i.test(prompt);
 }
@@ -176,6 +241,22 @@ async function tryHandleDirectAction(lastMessage: string, notion: Client, notion
     }
   }
 
+  const addToNamedPageMatch = lastMessage.match(/(?:add|append|insert)\s+([\s\S]+?)\s+(?:to|into|in)\s+@?([\w\s\-_/]+)[.!?\s]*$/i);
+  if (addToNamedPageMatch?.[1] && addToNamedPageMatch?.[2]) {
+    const text = addToNamedPageMatch[1].trim();
+    const pageRef = addToNamedPageMatch[2].trim();
+    if (text.length > 0 && pageRef.length > 0 && !/^(this\s+page)$/i.test(pageRef)) {
+      const page = await findPageByReference(notion, pageRef);
+      if (page) {
+        await notion.blocks.children.append({
+          block_id: page.id,
+          children: buildPlainTextBlocks(text, "paragraph") as any
+        });
+        return `Done. I added your text to \"${page.title || pageRef}\".`;
+      }
+    }
+  }
+
   const createPageWithTextMatch = lastMessage.match(/create\s+(?:a\s+)?page\s+(?:called|named|title[d]?)\s+["“]?(.+?)["”]?(?:\s+with\s+([\s\S]+))?$/i);
   if (createPageWithTextMatch?.[1]) {
     const title = createPageWithTextMatch[1].trim();
@@ -189,6 +270,22 @@ async function tryHandleDirectAction(lastMessage: string, notion: Client, notion
     return body
       ? `Done. I created the page \"${title}\" and added your text content.`
       : `Done. I created the page \"${title}\".`;
+  }
+
+  const createInNamedPageMatch = lastMessage.match(/create\s+(?:a\s+)?page\s+(?:called|named)\s+["“]?(.+?)["”]?\s+(?:in|under)\s+@?([\w\s\-_/]+)(?:\s+with\s+([\s\S]+))?$/i);
+  if (createInNamedPageMatch?.[1] && createInNamedPageMatch?.[2]) {
+    const title = createInNamedPageMatch[1].trim();
+    const parentRef = createInNamedPageMatch[2].trim();
+    const body = (createInNamedPageMatch[3] || "").trim();
+    const parentPage = await findPageByReference(notion, parentRef);
+    if (parentPage) {
+      await notion.pages.create({
+        parent: { page_id: parentPage.id },
+        properties: { title: { title: [{ text: { content: title.slice(0, 180) } }] } } as any,
+        children: body ? (buildPlainTextBlocks(body, "paragraph") as any) : undefined
+      });
+      return `Done. I created \"${title}\" under \"${parentPage.title || parentRef}\".`;
+    }
   }
 
   return null;
@@ -224,6 +321,74 @@ function buildHardQuotaFallbackText(lastMessage: string, retryAfterSeconds: numb
     "- Suggestion: keep prompts short and avoid repeated retries during cooldown.",
     "- After cooldown, retry once to resume full Notion AI behavior."
   ].join("\n");
+}
+
+function getBlockText(block: any): string {
+  if (!block || !block.type) return "";
+  const payload = block[block.type];
+  if (!payload) return "";
+  if (payload.rich_text) return getPlainTextFromRichTextArray(payload.rich_text);
+  return "";
+}
+
+async function listPageText(notion: Client, pageId: string): Promise<string> {
+  const response = await notion.blocks.children.list({ block_id: pageId, page_size: 100 });
+  const lines = (response.results || [])
+    .map((block: any) => getBlockText(block))
+    .filter((line: string) => line && line.trim().length > 0)
+    .slice(0, 120);
+  return lines.join("\n");
+}
+
+function buildDatabaseTemplateProperties(templateType: string): Record<string, any> {
+  const kind = String(templateType || "task_tracker").toLowerCase();
+
+  if (kind === "meeting_notes") {
+    return {
+      Name: { title: {} },
+      Date: { date: {} },
+      Owner: { rich_text: {} },
+      Attendees: { multi_select: {} },
+      Summary: { rich_text: {} },
+      "Action Items": { rich_text: {} },
+      Status: { select: { options: [{ name: "Draft" }, { name: "Reviewed" }, { name: "Done" }] } }
+    };
+  }
+
+  if (kind === "content_calendar") {
+    return {
+      Title: { title: {} },
+      Platform: { select: { options: [{ name: "LinkedIn" }, { name: "X" }, { name: "Instagram" }, { name: "YouTube" }, { name: "Blog" }] } },
+      "Publish Date": { date: {} },
+      Owner: { rich_text: {} },
+      Status: { select: { options: [{ name: "Idea" }, { name: "Draft" }, { name: "Scheduled" }, { name: "Published" }] } },
+      Campaign: { rich_text: {} }
+    };
+  }
+
+  if (kind === "crm") {
+    return {
+      Name: { title: {} },
+      Company: { rich_text: {} },
+      Stage: { select: { options: [{ name: "Lead" }, { name: "Qualified" }, { name: "Proposal" }, { name: "Won" }, { name: "Lost" }] } },
+      Value: { number: { format: "dollar" } },
+      Owner: { rich_text: {} },
+      "Next Follow-up": { date: {} }
+    };
+  }
+
+  return {
+    Name: { title: {} },
+    Status: { select: { options: [{ name: "To Do" }, { name: "In Progress" }, { name: "Blocked" }, { name: "Done" }] } },
+    Priority: { select: { options: [{ name: "Low" }, { name: "Medium" }, { name: "High" }, { name: "Urgent" }] } },
+    "Due Date": { date: {} },
+    Owner: { rich_text: {} },
+    Notes: { rich_text: {} }
+  };
+}
+
+function cleanModelText(text: string, maxLen = 18000): string {
+  return String(text || "").replace(/\u0000/g, "").trim().slice(0, maxLen);
 }
 
 function getErrorMessage(error: any): string {
@@ -507,9 +672,10 @@ export async function createServer() {
                 type: Type.OBJECT,
                 properties: {
                   page_id: { type: Type.STRING, description: "The ID of the page to update." },
+                  page_reference: { type: Type.STRING, description: "Optional page title reference (for example @Project Notes)." },
                   content_blocks: { type: Type.ARRAY, items: { type: Type.OBJECT }, description: "Blocks to append." }
                 },
-                required: ["page_id", "content_blocks"]
+                required: ["content_blocks"]
               }
             },
             {
@@ -518,9 +684,10 @@ export async function createServer() {
               parameters: {
                 type: Type.OBJECT,
                 properties: {
-                  page_id: { type: Type.STRING, description: "The ID of the page." }
+                  page_id: { type: Type.STRING, description: "The ID of the page." },
+                  page_reference: { type: Type.STRING, description: "Optional page title reference." }
                 },
-                required: ["page_id"]
+                required: []
               }
             },
             {
@@ -602,9 +769,10 @@ export async function createServer() {
               parameters: {
                 type: Type.OBJECT,
                 properties: {
-                  page_id: { type: Type.STRING, description: "The ID of the page to archive." }
+                  page_id: { type: Type.STRING, description: "The ID of the page to archive." },
+                  page_reference: { type: Type.STRING, description: "Optional page title reference." }
                 },
-                required: ["page_id"]
+                required: []
               }
             },
             {
@@ -653,6 +821,7 @@ export async function createServer() {
                 type: Type.OBJECT,
                 properties: {
                   page_id: { type: Type.STRING, description: "Optional target page id. Defaults to root page." },
+                  page_reference: { type: Type.STRING, description: "Optional page title reference (for example @Team Updates)." },
                   text: { type: Type.STRING, description: "Text content to append." },
                   style: {
                     type: Type.STRING,
@@ -660,6 +829,64 @@ export async function createServer() {
                   }
                 },
                 required: ["text"]
+              }
+            },
+            {
+              name: "extract_action_items_from_page",
+              description: "Extract action items from a page and optionally write them back as to-do blocks.",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  page_id: { type: Type.STRING, description: "Optional page ID." },
+                  page_reference: { type: Type.STRING, description: "Optional page title reference." },
+                  target_page_id: { type: Type.STRING, description: "Optional page ID where extracted tasks should be written." },
+                  write_back: { type: Type.BOOLEAN, description: "If true, append extracted items as to-do blocks to target page." }
+                },
+                required: []
+              }
+            },
+            {
+              name: "summarize_page_content",
+              description: "Create a concise summary of a Notion page and optionally append it back to a target page.",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  page_id: { type: Type.STRING, description: "Optional page ID." },
+                  page_reference: { type: Type.STRING, description: "Optional page title reference." },
+                  max_points: { type: Type.INTEGER, description: "Maximum bullet points in summary (default 6)." },
+                  append_to_page_id: { type: Type.STRING, description: "Optional target page for writing summary." }
+                },
+                required: []
+              }
+            },
+            {
+              name: "create_smart_database",
+              description: "Create a Notion database from a built-in AI template (task tracker, meeting notes, content calendar, crm).",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING, description: "Database title." },
+                  template_type: { type: Type.STRING, description: "One of: task_tracker, meeting_notes, content_calendar, crm" },
+                  parent_id: { type: Type.STRING, description: "Optional parent page id." },
+                  parent_reference: { type: Type.STRING, description: "Optional parent page title reference, e.g. @Team Hub." }
+                },
+                required: ["title", "template_type"]
+              }
+            },
+            {
+              name: "rewrite_page_content",
+              description: "Rewrite a page with a target tone/style and optionally append rewritten output to another page.",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  page_id: { type: Type.STRING, description: "Optional source page id." },
+                  page_reference: { type: Type.STRING, description: "Optional source page title reference." },
+                  objective: { type: Type.STRING, description: "Rewrite objective, e.g. make concise, executive summary, persuasive, formal." },
+                  tone: { type: Type.STRING, description: "Optional tone such as professional, friendly, technical." },
+                  format: { type: Type.STRING, description: "Optional output format such as bullets, memo, email, checklist." },
+                  append_to_page_id: { type: Type.STRING, description: "Optional target page id to append rewritten output." }
+                },
+                required: ["objective"]
               }
             }
       ];
@@ -780,6 +1007,7 @@ export async function createServer() {
       const baseMaxTurns = isBudgetMode ? 1 : ((process.env.VERCEL || process.env.NETLIFY) ? 2 : 5);
       const MAX_TURNS = requiresActionExecution ? Math.max(baseMaxTurns, 2) : baseMaxTurns;
       let forcedToolCallAttempted = false;
+      let latestToolSummaryText = "";
 
       while (turnCount < MAX_TURNS) {
         console.log(`[Chat API] Starting turn ${turnCount + 1}/${MAX_TURNS}`);
@@ -831,13 +1059,15 @@ export async function createServer() {
                 });
                 break;
               case "update_page_content":
+                const updateTarget = await resolvePageId(notion, args, notionPageId);
                 result = await notion.blocks.children.append({
-                  block_id: args.page_id as string,
+                  block_id: updateTarget.pageId,
                   children: args.content_blocks as any
                 });
                 break;
               case "get_page_content":
-                result = await notion.blocks.children.list({ block_id: args.page_id as string });
+                const readTarget = await resolvePageId(notion, args, notionPageId);
+                result = await notion.blocks.children.list({ block_id: readTarget.pageId });
                 break;
               case "create_database":
                 result = await notion.databases.create({
@@ -884,8 +1114,9 @@ export async function createServer() {
                 });
                 break;
               case "archive_page":
+                const archiveTarget = await resolvePageId(notion, args, notionPageId);
                 result = await notion.pages.update({
-                  page_id: args.page_id as string,
+                  page_id: archiveTarget.pageId,
                   archived: true
                 });
                 break;
@@ -918,10 +1149,115 @@ export async function createServer() {
                 });
                 break;
               case "append_text_to_page":
+                const appendTarget = await resolvePageId(notion, args, notionPageId);
                 result = await notion.blocks.children.append({
-                  block_id: (args.page_id as string) || notionPageId,
+                  block_id: appendTarget.pageId,
                   children: buildPlainTextBlocks(String(args.text || ""), String(args.style || "paragraph")) as any
                 });
+                break;
+              case "extract_action_items_from_page":
+                const extractTarget = await resolvePageId(notion, args, notionPageId);
+                const extractText = await listPageText(notion, extractTarget.pageId);
+                const actionRegex = /(?:^-\s*\[\s?\]|^-\s+|^\d+\.\s+|\b(todo|action item|next step|follow up)\b[:\-]?\s*)(.+)$/gim;
+                const extracted: string[] = [];
+                let match: RegExpExecArray | null;
+                while ((match = actionRegex.exec(extractText)) !== null) {
+                  const line = String(match[2] || "").trim();
+                  if (line.length > 0 && !extracted.includes(line)) extracted.push(line);
+                }
+                const tasks = extracted.slice(0, 20);
+                if ((args.write_back === true) && tasks.length > 0) {
+                  const writeTarget = String(args.target_page_id || extractTarget.pageId);
+                  await notion.blocks.children.append({
+                    block_id: writeTarget,
+                    children: tasks.map(item => ({
+                      object: "block",
+                      type: "to_do",
+                      to_do: { rich_text: toRichText(item), checked: false }
+                    })) as any
+                  });
+                }
+                result = {
+                  sourcePageId: extractTarget.pageId,
+                  extractedCount: tasks.length,
+                  tasks,
+                  wroteBack: args.write_back === true
+                };
+                break;
+              case "summarize_page_content":
+                const summaryTarget = await resolvePageId(notion, args, notionPageId);
+                const sourceText = await listPageText(notion, summaryTarget.pageId);
+                const maxPoints = Math.min(12, Math.max(3, Number(args.max_points || 6)));
+                const summaryResponse = await retryGenerateContent(ai, {
+                  model: "gemini-3.1-flash-lite-preview",
+                  contents: [{ role: "user", parts: [{ text: `Summarize this Notion page text into ${maxPoints} concise bullet points:\n\n${sourceText.slice(0, 14000)}` }] }],
+                  config: {
+                    systemInstruction: "Return only concise bullet points. No markdown title.",
+                    maxOutputTokens: 280,
+                    thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
+                  }
+                });
+                const summaryText = String(summaryResponse.text || "").trim();
+                if (args.append_to_page_id && summaryText) {
+                  await notion.blocks.children.append({
+                    block_id: String(args.append_to_page_id),
+                    children: buildPlainTextBlocks(summaryText, "bulleted_list_item") as any
+                  });
+                }
+                result = {
+                  sourcePageId: summaryTarget.pageId,
+                  summary: summaryText,
+                  appended: !!args.append_to_page_id
+                };
+                break;
+              case "create_smart_database":
+                const parentRef = String(args.parent_reference || "").trim();
+                let parentId = String(args.parent_id || "").trim();
+                if (!parentId && parentRef) {
+                  const parentPage = await findPageByReference(notion, parentRef);
+                  if (!parentPage) {
+                    throw new Error(`Could not find parent page for reference: ${parentRef}`);
+                  }
+                  parentId = parentPage.id;
+                }
+                result = await notion.databases.create({
+                  parent: { type: "page_id", page_id: parentId || notionPageId } as any,
+                  title: [{ text: { content: String(args.title || "AI Database").slice(0, 180) } }],
+                  properties: buildDatabaseTemplateProperties(String(args.template_type || "task_tracker")) as any
+                } as any);
+                break;
+              case "rewrite_page_content":
+                const rewriteTarget = await resolvePageId(notion, args, notionPageId);
+                const rewriteInput = await listPageText(notion, rewriteTarget.pageId);
+                const rewritePrompt = [
+                  `Objective: ${String(args.objective || "make this clearer")}`,
+                  `Tone: ${String(args.tone || "professional")}`,
+                  `Format: ${String(args.format || "bullets")}`,
+                  "",
+                  "Rewrite the following content accordingly:",
+                  cleanModelText(rewriteInput, 15000)
+                ].join("\n");
+                const rewriteResponse = await retryGenerateContent(ai, {
+                  model: "gemini-3.1-flash-lite-preview",
+                  contents: [{ role: "user", parts: [{ text: rewritePrompt }] }],
+                  config: {
+                    systemInstruction: "Return only rewritten content. Keep it concise and useful.",
+                    maxOutputTokens: 450,
+                    thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
+                  }
+                });
+                const rewritten = cleanModelText(rewriteResponse.text || "");
+                if (args.append_to_page_id && rewritten) {
+                  await notion.blocks.children.append({
+                    block_id: String(args.append_to_page_id),
+                    children: buildPlainTextBlocks(rewritten, "paragraph") as any
+                  });
+                }
+                result = {
+                  sourcePageId: rewriteTarget.pageId,
+                  rewritten,
+                  appended: !!args.append_to_page_id
+                };
                 break;
               default:
                 result = { error: "Unknown tool" };
@@ -942,6 +1278,12 @@ export async function createServer() {
             };
           }
         }));
+
+        latestToolSummaryText = toolResults
+          .map(r => r.result?.error
+            ? `- ${r.name}: failed (${String(r.result.error).slice(0, 120)})`
+            : `- ${r.name}: success`)
+          .join("\n");
 
         // Add model's call and tool's response to history
         currentHistory.push({ role: "model", parts: response.candidates[0].content.parts as any });
@@ -997,8 +1339,11 @@ export async function createServer() {
         });
         runtimeMetrics.cacheWrites += 1;
       }
+      const responseWithActions = latestToolSummaryText
+        ? `${finalResponseText || "I've completed the requested actions in your Notion workspace."}\n\nExecuted actions:\n${latestToolSummaryText}`
+        : (finalResponseText || "I've completed the requested actions in your Notion workspace.");
       runtimeMetrics.requestsSucceeded += 1;
-      res.json({ content: finalResponseText || "I've completed the requested actions in your Notion workspace." });
+      res.json({ content: responseWithActions });
 
     } catch (error: any) {
       console.timeEnd("ChatRequest");

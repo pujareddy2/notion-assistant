@@ -443,12 +443,17 @@ export default function App() {
                   <h2 className="text-2xl font-bold text-slate-800 mb-2">How can I help with your workspace?</h2>
                   <p className="text-slate-500">I can manage your Notion pages and research information for you.</p>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   {[
                     { icon: <Database className="w-4 h-4" />, label: "Create Task Database", prompt: "Create a database for 'Project Tasks' with Status (Select), Priority (Select), and Due Date (Date) properties." },
                     { icon: <Search className="w-4 h-4" />, label: "Analyze Workspace", prompt: "Search my workspace for 'Research' pages, summarize the key ideas, and convert them into a bulleted list of action items." },
                     { icon: <FileText className="w-4 h-4" />, label: "Summarize Meeting", prompt: "Find my 'Weekly Sync' page, extract the key points, and convert the notes into a checklist of action items." },
-                    { icon: <Layout className="w-4 h-4" />, label: "Generate Insights", prompt: "Query my 'Project Tasks' database, filter for 'High Priority' tasks, and generate a summary of our current progress." }
+                    { icon: <Layout className="w-4 h-4" />, label: "Generate Insights", prompt: "Query my 'Project Tasks' database, filter for 'High Priority' tasks, and generate a summary of our current progress." },
+                    { icon: <Plus className="w-4 h-4" />, label: "Add Text To Page", prompt: "Add Release checklist finalized and QA signoff pending to this page" },
+                    { icon: <ChevronRight className="w-4 h-4" />, label: "Write To @Page", prompt: "Add We should prioritize onboarding fixes this week to @Team Updates" },
+                    { icon: <BarChart className="w-4 h-4" />, label: "Build Smart DB", prompt: "Create a smart database called Content Pipeline using content calendar template" },
+                    { icon: <FileText className="w-4 h-4" />, label: "Rewrite Content", prompt: "Rewrite @Weekly Sync with objective make concise and tone executive, then append result to this page" },
+                    { icon: <Trash2 className="w-4 h-4" />, label: "Extract Action Items", prompt: "Extract action items from @Planning Notes and write them back" }
                   ].map((action, i) => (
                     <button
                       key={i}

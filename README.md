@@ -83,6 +83,25 @@ Action execution improvements:
 - Added plain-text tools: `create_page_with_text` and `append_text_to_page` so the assistant can execute writes without complex block JSON.
 - Added a forced second-pass execution reminder when the model replies with text for action intents instead of calling tools.
 
+Upgraded Notion-agent capabilities:
+
+- Named page resolution: prompts can target pages by `@Page Name` or title-like references.
+- Page summary skill: summarize a page into concise bullets (`summarize_page_content`).
+- Action extraction skill: detect action items from page text and optionally write them back as to-do blocks (`extract_action_items_from_page`).
+- More resilient action execution for create/update/archive/read flows even when page IDs are not provided.
+- Smart database templates: create starter databases for `task_tracker`, `meeting_notes`, `content_calendar`, and `crm` (`create_smart_database`).
+- Content rewriting skill: rewrite page content by objective/tone/format and optionally append output into another page (`rewrite_page_content`).
+- Execution trace in replies: API responses now include a compact list of executed tool actions for transparency.
+
+Prompt examples:
+
+- "Add Please finalize release notes to @Engineering Updates"
+- "Create a page called Sprint Debrief in @Team Hub with Key outcomes and action items"
+- "Summarize @Weekly Sync into 6 bullets"
+- "Extract action items from @Planning Notes and write them back"
+- "Create a smart database called Sales Pipeline with crm template"
+- "Rewrite @Design Notes with objective make concise, tone executive, format bullets"
+
 ## Observability
 
 Use the runtime metrics endpoint to monitor request health:
