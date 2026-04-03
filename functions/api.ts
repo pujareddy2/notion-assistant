@@ -4,9 +4,19 @@ import { createServer } from "../server.ts";
 let serverlessHandler: any;
 
 export const handler = async (event: any, context: any) => {
-  if (!serverlessHandler) {
-    const app = await createServer();
-    serverlessHandler = serverless(app);
+  console.log(`[Netlify Function] Invoked: ${event.path} [${event.httpMethod}]`);
+  try {
+    if (!serverlessHandler) {
+      console.log("[Netlify Function] Initializing server...");
+      const app = await createServer();
+      serverlessHandler = serverless(app);
+    }
+    return serverlessHandler(event, context);
+  } catch (err: any) {
+    console.error("[Netlify Function] Initialization Error:", err);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: "Internal Server Error during initialization", details: err.message }),
+    };
   }
-  return serverlessHandler(event, context);
 };

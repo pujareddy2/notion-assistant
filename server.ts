@@ -1,5 +1,4 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import cors from "cors";
@@ -16,21 +15,20 @@ if (envResult.error) {
   console.error("Dotenv Error:", envResult.error);
 }
 
-const PUBLIC_DIR = path.join(process.cwd(), "public");
-const GENERATED_DIR = path.join(PUBLIC_DIR, "generated");
-
 export async function createServer() {
   const app = express();
   const PORT = 3000;
 
   app.use(cors());
   app.use(express.json({ limit: "50mb" }));
-  app.use("/generated", express.static(GENERATED_DIR));
 
   // API Routes
   app.post("/api/chat", async (req, res) => {
     const startTime = Date.now();
+    console.time("ChatRequest");
     const { messages } = req.body;
+
+    console.log(`[Chat API] Received request with ${messages?.length || 0} messages`);
 
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "Messages array is required" });
@@ -45,6 +43,10 @@ export async function createServer() {
       
       const notionApiKey = (process.env.NOTION_API_KEY || "").trim();
       const notionPageId = (process.env.NOTION_PAGE_ID || "").trim();
+
+      if (!geminiApiKey) console.error("[Chat API] GEMINI_API_KEY is missing!");
+      if (!notionApiKey) console.error("[Chat API] NOTION_API_KEY is missing!");
+      if (!notionPageId) console.error("[Chat API] NOTION_PAGE_ID is missing!");
 
       if (!geminiApiKey || !notionApiKey || !notionPageId) {
         return res.status(500).json({ 
@@ -211,18 +213,21 @@ export async function createServer() {
       
       let finalResponseText = "";
       let turnCount = 0;
-      const MAX_TURNS = (process.env.VERCEL || process.env.NETLIFY) ? 3 : 5;
+      const MAX_TURNS = (process.env.VERCEL || process.env.NETLIFY) ? 2 : 5;
 
       while (turnCount < MAX_TURNS) {
+        console.log(`[Chat API] Starting turn ${turnCount + 1}/${MAX_TURNS}`);
+        console.time(`Turn ${turnCount + 1}`);
         const response = await ai.models.generateContent({
           model: "gemini-3-flash-preview",
           contents: currentHistory,
           config: {
             systemInstruction,
             tools: tools,
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }
+            thinkingConfig: { thinkingLevel: (process.env.VERCEL || process.env.NETLIFY) ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW }
           },
         });
+        console.timeEnd(`Turn ${turnCount + 1}`);
 
         const functionCalls = response.functionCalls;
         
@@ -340,7 +345,7 @@ export async function createServer() {
           contents: currentHistory,
           config: {
             systemInstruction: "You have reached the maximum number of turns. Please provide a final summary of what you have accomplished so far and any errors encountered.",
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
           },
         });
         finalResponseText = finalResponse.text || "I've reached the maximum number of steps for this task. Please check your Notion workspace for the results.";
@@ -348,16 +353,19 @@ export async function createServer() {
 
       // Final cleanup and timing - Removed artificial delay for serverless compatibility
       const totalTime = Date.now() - startTime;
+      console.timeEnd("ChatRequest");
       console.log(`[Chat API] Request completed in ${totalTime}ms`);
       res.json({ content: finalResponseText || "I've completed the requested actions in your Notion workspace." });
 
     } catch (error: any) {
+      console.timeEnd("ChatRequest");
       console.error("Agentic Error:", error);
       res.status(500).json({ error: error.message || "An unexpected error occurred in the workspace assistant." });
     }
   });
 
   if (process.env.NODE_ENV !== "production" && !process.env.VERCEL && !process.env.NETLIFY) {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -380,4 +388,10 @@ export async function createServer() {
   return app;
 }
 
-export const app = createServer();
+// Start server if running directly
+if (import.meta.url === `file://${fileURLToPath(import.meta.url)}`) {
+  createServer().catch(err => {
+    console.error("Failed to start server:", err);
+    process.exit(1);
+  });
+}

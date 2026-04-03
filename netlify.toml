@@ -3,6 +3,10 @@
   publish = "dist"
   functions = "functions"
 
+[functions]
+  node_bundle = true
+  timeout = 26
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/api/:splat"
