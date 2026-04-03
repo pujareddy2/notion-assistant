@@ -5,37 +5,116 @@ import dotenv from "dotenv";
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { Client } from "@notionhq/client";
 
-// Helper for exponential backoff on Gemini API calls (503/429 errors)
+type GeminiErrorKind = "hard_quota" | "rate_limited" | "service_unavailable" | "unknown";
+let quotaCooldownUntil = 0;
+const HARD_QUOTA_COOLDOWN_MS = 10 * 60 * 1000;
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getErrorMessage(error: any): string {
+  if (typeof error?.message === "string" && error.message.length > 0) return error.message;
+  if (typeof error?.error?.message === "string" && error.error.message.length > 0) return error.error.message;
+  return "";
+}
+
+function classifyGeminiError(error: any): { kind: GeminiErrorKind; retryable: boolean; statusCode: number } {
+  const message = getErrorMessage(error).toLowerCase();
+  const status = String(error?.status || error?.error?.status || "").toUpperCase();
+  const code = Number(error?.code ?? error?.error?.code);
+
+  const isHardQuota =
+    message.includes("exceeded your current quota") ||
+    message.includes("billing details") ||
+    message.includes("insufficient_quota") ||
+    message.includes("quota exceeded");
+
+  if (isHardQuota) {
+    return { kind: "hard_quota", retryable: false, statusCode: 429 };
+  }
+
+  const isRateLimited =
+    code === 429 ||
+    status === "RESOURCE_EXHAUSTED" ||
+    message.includes("resource_exhausted") ||
+    message.includes("rate limit") ||
+    message.includes("too many requests");
+
+  if (isRateLimited) {
+    return { kind: "rate_limited", retryable: true, statusCode: 429 };
+  }
+
+  const isUnavailable =
+    code === 503 ||
+    status === "UNAVAILABLE" ||
+    message.includes("unavailable") ||
+    message.includes("overloaded") ||
+    message.includes("high demand") ||
+    message.includes("503");
+
+  if (isUnavailable) {
+    return { kind: "service_unavailable", retryable: true, statusCode: 503 };
+  }
+
+  return { kind: "unknown", retryable: false, statusCode: 500 };
+}
+
+function getQuotaRetryAfterSeconds(now = Date.now()): number {
+  if (quotaCooldownUntil <= now) return 0;
+  return Math.max(1, Math.ceil((quotaCooldownUntil - now) / 1000));
+}
+
+// Helper for exponential backoff on Gemini API calls.
 async function retryGenerateContent(ai: any, params: any) {
   const isServerless = !!(process.env.NETLIFY || process.env.VERCEL);
   const maxRetries = isServerless ? 3 : 5;
+  const configuredPrimary = (process.env.GEMINI_MODEL_PRIMARY || "").trim();
+  const configuredFallbacks = (process.env.GEMINI_MODEL_FALLBACKS || "")
+    .split(",")
+    .map(item => item.trim())
+    .filter(Boolean);
+  const preferredModels = isServerless
+    ? ["gemini-3.1-flash-lite-preview", "gemini-3-flash-preview"]
+    : ["gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"];
+
+  const modelsToTry = Array.from(
+    new Set([
+      params.model,
+      configuredPrimary,
+      ...configuredFallbacks,
+      ...preferredModels
+    ].filter(Boolean))
+  );
+
   let lastError;
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      // Use a faster model for serverless if not specified
-      if (isServerless && params.model === "gemini-3-flash-preview") {
-        params.model = "gemini-3.1-flash-lite-preview";
+  for (const model of modelsToTry) {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        return await ai.models.generateContent({ ...params, model });
+      } catch (error: any) {
+        lastError = error;
+        const errorInfo = classifyGeminiError(error);
+        const errorMsg = getErrorMessage(error);
+
+        if (errorInfo.kind === "hard_quota") {
+          throw error;
+        }
+
+        if (errorInfo.retryable && i < maxRetries - 1) {
+          const baseDelay = errorInfo.kind === "rate_limited" ? 2500 : 1200;
+          const delay = Math.pow(2, i) * baseDelay + Math.random() * 800;
+          console.warn(
+            `[Chat API] Gemini transient failure (${errorInfo.kind}) for ${model} ` +
+            `(attempt ${i + 1}/${maxRetries}). Retrying in ${Math.round(delay)}ms... ` +
+            `Error: ${errorMsg.substring(0, 120)}`
+          );
+          await sleep(delay);
+          continue;
+        }
+
+        break;
       }
-      return await ai.models.generateContent(params);
-    } catch (error: any) {
-      lastError = error;
-      const errorMsg = error.message || "";
-      const isQuotaError = errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED");
-      const isRetryable = errorMsg.includes("503") || 
-                         isQuotaError || 
-                         errorMsg.includes("UNAVAILABLE") ||
-                         errorMsg.includes("high demand") ||
-                         errorMsg.includes("overloaded");
-      
-      if (isRetryable && i < maxRetries - 1) {
-        // More aggressive backoff for 429s (quota exceeded)
-        const baseDelay = isQuotaError ? 5000 : 1500;
-        const delay = Math.pow(2, i) * baseDelay + Math.random() * 2000;
-        console.warn(`[Chat API] Gemini busy/overloaded (attempt ${i + 1}/${maxRetries}). Retrying in ${Math.round(delay)}ms... Error: ${errorMsg.substring(0, 100)}`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
-      throw error;
     }
   }
   throw lastError;
@@ -84,6 +163,17 @@ export async function createServer() {
     }
 
     try {
+      const now = Date.now();
+      if (quotaCooldownUntil > now) {
+        const retryAfterSeconds = getQuotaRetryAfterSeconds(now);
+        res.setHeader("Retry-After", String(retryAfterSeconds));
+        return res.status(429).json({
+          error: "Gemini quota is currently exhausted for this key. Please retry later or switch to a key with available free quota.",
+          code: "hard_quota",
+          retryAfterSeconds
+        });
+      }
+
       const geminiApiKey = (
         process.env.GEMINI_API_KEY || 
         process.env.API_KEY || 
@@ -115,9 +205,11 @@ export async function createServer() {
       const ai = new GoogleGenAI({ apiKey: geminiApiKey });
       const notion = new Client({ auth: notionApiKey });
 
-      const tools = [
-        {
-          functionDeclarations: [
+      const isBudgetMode = process.env.GEMINI_BUDGET_MODE !== "false";
+      const enableWebSearch = process.env.ENABLE_WEB_SEARCH === "true" && !isBudgetMode;
+      const enableImageGeneration = process.env.ENABLE_IMAGE_GENERATION === "true" && !isBudgetMode;
+
+      const functionDeclarations: any[] = [
             {
               name: "create_page",
               description: "Create a new Notion page with structured content.",
@@ -264,14 +356,23 @@ export async function createServer() {
                 required: ["prompt"]
               }
             }
-          ]
-        },
-        { googleSearch: {} }
       ];
+
+      const tools: any[] = [
+        {
+          functionDeclarations: enableImageGeneration
+            ? functionDeclarations
+            : functionDeclarations.filter(t => t.name !== "generate_image")
+        }
+      ];
+
+      if (enableWebSearch) {
+        tools.push({ googleSearch: {} });
+      }
 
       // Optimize history: only keep last 6 messages to reduce token overhead and speed up processing
       const lastMessage = messages[messages.length - 1].content;
-      const historyLimit = 6;
+      const historyLimit = isBudgetMode ? 3 : 6;
       const recentMessages = messages.slice(-historyLimit - 1, -1);
       
       const history = recentMessages.map(m => ({
@@ -324,6 +425,7 @@ export async function createServer() {
           contents: [{ role: "user", parts: [{ text: lastMessage }] }],
           config: {
             systemInstruction: "Briefly respond to greetings or short chat.",
+            maxOutputTokens: isBudgetMode ? 120 : 220,
             thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
           },
         });
@@ -339,7 +441,7 @@ export async function createServer() {
       
       let finalResponseText = "";
       let turnCount = 0;
-      const MAX_TURNS = (process.env.VERCEL || process.env.NETLIFY) ? 2 : 5;
+      const MAX_TURNS = isBudgetMode ? 1 : ((process.env.VERCEL || process.env.NETLIFY) ? 2 : 5);
 
       while (turnCount < MAX_TURNS) {
         console.log(`[Chat API] Starting turn ${turnCount + 1}/${MAX_TURNS}`);
@@ -350,7 +452,7 @@ export async function createServer() {
           config: {
             systemInstruction,
             tools: tools,
-            maxOutputTokens: 500,
+            maxOutputTokens: isBudgetMode ? 220 : 500,
             thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
           },
         });
@@ -443,7 +545,7 @@ export async function createServer() {
                 });
                 break;
               case "generate_image":
-                const imgResponse = await ai.models.generateContent({
+                const imgResponse = await retryGenerateContent(ai, {
                   model: "gemini-2.5-flash-image",
                   contents: [{ role: "user", parts: [{ text: args.prompt as string }] }]
                 });
@@ -508,11 +610,12 @@ export async function createServer() {
 
       // If we exited the loop due to MAX_TURNS, get a final summary
       if (turnCount === MAX_TURNS && !finalResponseText) {
-        const finalResponse = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
+        const finalResponse = await retryGenerateContent(ai, {
+          model: isBudgetMode ? "gemini-3.1-flash-lite-preview" : "gemini-3-flash-preview",
           contents: currentHistory,
           config: {
             systemInstruction: "You have reached the maximum number of turns. Please provide a final summary of what you have accomplished so far and any errors encountered.",
+            maxOutputTokens: isBudgetMode ? 220 : 500,
             thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
           },
         });
@@ -528,10 +631,37 @@ export async function createServer() {
     } catch (error: any) {
       console.timeEnd("ChatRequest");
       console.error("[Chat API] Agentic Error:", error);
+      const geminiError = classifyGeminiError(error);
+      const isQuotaStyleError = geminiError.kind === "hard_quota" || geminiError.kind === "rate_limited";
+
+      if (isQuotaStyleError) {
+        if (geminiError.kind === "hard_quota") {
+          quotaCooldownUntil = Date.now() + HARD_QUOTA_COOLDOWN_MS;
+        }
+
+        const retryAfterSeconds = geminiError.kind === "hard_quota"
+          ? getQuotaRetryAfterSeconds()
+          : 20;
+
+        const responseBody = geminiError.kind === "hard_quota"
+          ? {
+              error: "Gemini API quota exhausted for this project key. Add billing or increase quota in Google AI Studio, then retry.",
+              code: "hard_quota",
+              retryAfterSeconds
+            }
+          : {
+              error: "Gemini is temporarily rate-limited. Please retry shortly.",
+              code: "rate_limited",
+              retryAfterSeconds
+            };
+
+        res.setHeader("Retry-After", String(responseBody.retryAfterSeconds));
+        return res.status(429).json(responseBody);
+      }
       
       // Log more details for debugging
       const errorDetails = {
-        message: error.message,
+        message: getErrorMessage(error) || error.message,
         stack: error.stack,
         env: {
           hasGemini: !!process.env.GEMINI_API_KEY,
@@ -545,7 +675,7 @@ export async function createServer() {
       console.error("[Chat API] Error Details:", JSON.stringify(errorDetails, null, 2));
 
       res.status(500).json({ 
-        error: error.message || "An unexpected error occurred in the workspace assistant.",
+        error: getErrorMessage(error) || "An unexpected error occurred in the workspace assistant.",
         debug: process.env.NODE_ENV !== "production" ? errorDetails : undefined
       });
     }

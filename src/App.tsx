@@ -54,6 +54,20 @@ interface ChartData {
   data: any[];
 }
 
+interface ApiErrorPayload {
+  error?: string;
+  code?: string;
+  retryAfterSeconds?: number;
+}
+
+function parseRetryAfterSeconds(response: Response): number | null {
+  const rawRetryAfter = response.headers.get("Retry-After");
+  if (!rawRetryAfter) return null;
+  const parsed = Number.parseInt(rawRetryAfter, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([
     { role: "assistant", content: "Hello! I'm your Gemini Notion Assistant. I can help you manage your Notion workspace. Try asking me to create a page, search for something, or even generate a database!" }
@@ -63,6 +77,8 @@ export default function App() {
   const [showSetup, setShowSetup] = useState(false);
   const [currentPage, setCurrentPage] = useState<"chat" | "insights">("chat");
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
+  const [retryAfterSeconds, setRetryAfterSeconds] = useState<number | null>(null);
   const [apiStatus, setApiStatus] = useState<{ hasGemini: boolean; hasNotion: boolean; hasPageId: boolean } | null>(null);
   const [chartData, setChartData] = useState<ChartData | null>(null);
   const [knowledgeBase, setKnowledgeBase] = useState<{ title: string; summary: string }[]>([]);
@@ -136,7 +152,19 @@ export default function App() {
       
       clearTimeout(id);
 
-      if ((response.status === 504 || response.status === 429) && retries > 0) {
+      if (response.status === 429 && retries > 0) {
+        const payload: ApiErrorPayload | null = await response.clone().json().catch(() => null);
+        const isHardQuota = payload?.code === "hard_quota";
+        if (!isHardQuota) {
+          const serverRetryAfter = parseRetryAfterSeconds(response);
+          const waitMs = serverRetryAfter ? serverRetryAfter * 1000 : backoff;
+          console.warn(`429 Error for ${url}. Retrying in ${waitMs}ms...`);
+          await new Promise(res => setTimeout(res, waitMs));
+          return fetchWithRetry(url, options, retries - 1, Math.min(backoff * 2, 30000));
+        }
+      }
+
+      if (response.status === 504 && retries > 0) {
         console.warn(`${response.status} Error for ${url}. Retrying in ${backoff}ms...`);
         await new Promise(res => setTimeout(res, backoff));
         return fetchWithRetry(url, options, retries - 1, backoff * 2);
@@ -165,6 +193,8 @@ export default function App() {
     setInput("");
     setIsLoading(true);
     setError(null);
+    setErrorCode(null);
+    setRetryAfterSeconds(null);
 
     try {
       const response = await fetchWithRetry("/api/chat", {
@@ -174,10 +204,30 @@ export default function App() {
       });
 
       if (!response.ok) {
+        const errorData: ApiErrorPayload = await response.json().catch(() => ({}));
+
+        if (response.status === 429) {
+          const code = errorData.code || "rate_limited";
+          const retryHint = typeof errorData.retryAfterSeconds === "number"
+            ? ` Please retry in about ${errorData.retryAfterSeconds} seconds.`
+            : " Please retry in a short while.";
+
+          setErrorCode(code);
+          setRetryAfterSeconds(errorData.retryAfterSeconds ?? null);
+
+          if (code === "hard_quota") {
+            throw new Error(
+              errorData.error ||
+              "Gemini quota is exhausted for this deployment key. Add billing/increase quota in Google AI Studio or switch to a different API key."
+            );
+          }
+
+          throw new Error((errorData.error || "Gemini is temporarily rate-limited.") + retryHint);
+        }
+
         if (response.status === 504) {
           throw new Error("The server timed out. This usually happens when Notion or the AI model is slow. Please try a simpler request.");
         }
-        const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.error || `Server error: ${response.status}`);
       }
 
@@ -191,6 +241,9 @@ export default function App() {
     } catch (err: any) {
       const errorMessage = err.message || "Failed to connect to the server.";
       setError(errorMessage);
+      if (err?.code && typeof err.code === "string") {
+        setErrorCode(err.code);
+      }
       setMessages(prev => [...prev, { role: "assistant", content: `**Connection Error:** ${errorMessage}` }]);
     } finally {
       setIsLoading(false);
@@ -309,9 +362,13 @@ export default function App() {
                     <span className="text-sm font-medium">Something went wrong</span>
                   </div>
                   <p className="text-xs text-red-500 text-center leading-relaxed">
-                    {error.includes("429") || error.includes("quota") 
-                      ? "Gemini API quota exceeded. This happens when there are too many requests. Please wait a moment and try again."
-                      : error}
+                    {errorCode === "hard_quota"
+                      ? "Gemini API quota is exhausted for this deployment key. Add billing or increase quota in Google AI Studio, then retry."
+                      : errorCode === "rate_limited"
+                        ? `Gemini is currently rate-limited. Please wait${typeof retryAfterSeconds === "number" ? ` about ${retryAfterSeconds}s` : " a moment"} and retry.`
+                        : (error.includes("429") || error.toLowerCase().includes("quota")
+                          ? "Gemini API quota exceeded. Please wait a moment and try again."
+                          : error)}
                   </p>
                   <button
                     onClick={handleRetry}
