@@ -53,6 +53,9 @@ export async function createServer() {
       const notionApiKey = (process.env.NOTION_API_KEY || "").trim();
       const notionPageId = (process.env.NOTION_PAGE_ID || "").trim();
 
+      console.log(`[Chat API] Key Check: Gemini=${!!geminiApiKey}, Notion=${!!notionApiKey}, PageId=${!!notionPageId}`);
+      if (geminiApiKey) console.log(`[Chat API] Gemini Key starts with: ${geminiApiKey.substring(0, 5)}...`);
+
       if (!geminiApiKey) console.error("[Chat API] GEMINI_API_KEY is missing!");
       if (!notionApiKey) console.error("[Chat API] NOTION_API_KEY is missing!");
       if (!notionPageId) console.error("[Chat API] NOTION_PAGE_ID is missing!");
