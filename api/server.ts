@@ -116,6 +116,84 @@ function buildCacheKey(messages: Array<{ role: "user" | "assistant"; content: st
   return createHash("sha256").update(payload).digest("hex");
 }
 
+function isActionIntent(prompt: string): boolean {
+  return /(create|add|append|insert|update|edit|modify|delete|remove|archive|extract|summari[sz]e|research|search|find|database|table|page|notion)/i.test(prompt);
+}
+
+function toRichText(content: string) {
+  return [{ type: "text", text: { content: content.slice(0, 1900) } }];
+}
+
+function buildPlainTextBlocks(text: string, style: string = "paragraph"): any[] {
+  const normalizedStyle = String(style || "paragraph").toLowerCase();
+  const chunks = text
+    .split(/\n{2,}/)
+    .map(t => t.trim())
+    .filter(Boolean)
+    .slice(0, 80);
+
+  const safeChunks = chunks.length > 0 ? chunks : [text.trim()].filter(Boolean);
+
+  return safeChunks.map(chunk => {
+    const richText = toRichText(chunk);
+    switch (normalizedStyle) {
+      case "heading_1":
+        return { object: "block", type: "heading_1", heading_1: { rich_text: richText } };
+      case "heading_2":
+        return { object: "block", type: "heading_2", heading_2: { rich_text: richText } };
+      case "heading_3":
+        return { object: "block", type: "heading_3", heading_3: { rich_text: richText } };
+      case "bulleted_list_item":
+        return { object: "block", type: "bulleted_list_item", bulleted_list_item: { rich_text: richText } };
+      case "numbered_list_item":
+        return { object: "block", type: "numbered_list_item", numbered_list_item: { rich_text: richText } };
+      case "to_do":
+        return { object: "block", type: "to_do", to_do: { rich_text: richText, checked: false } };
+      case "quote":
+        return { object: "block", type: "quote", quote: { rich_text: richText } };
+      case "code":
+        return { object: "block", type: "code", code: { rich_text: richText, language: "plain text" } };
+      case "callout":
+        return { object: "block", type: "callout", callout: { rich_text: richText, icon: { emoji: "💡" } } };
+      case "toggle":
+        return { object: "block", type: "toggle", toggle: { rich_text: richText } };
+      default:
+        return { object: "block", type: "paragraph", paragraph: { rich_text: richText } };
+    }
+  });
+}
+
+async function tryHandleDirectAction(lastMessage: string, notion: Client, notionPageId: string): Promise<string | null> {
+  const addToThisPageMatch = lastMessage.match(/(?:add|append|insert)\s+([\s\S]+?)\s+(?:to|into|in)\s+(?:this\s+)?page[.!?\s]*$/i);
+  if (addToThisPageMatch?.[1]) {
+    const text = addToThisPageMatch[1].trim();
+    if (text.length > 0) {
+      await notion.blocks.children.append({
+        block_id: notionPageId,
+        children: buildPlainTextBlocks(text, "paragraph") as any
+      });
+      return "Done. I added your text to the current Notion page.";
+    }
+  }
+
+  const createPageWithTextMatch = lastMessage.match(/create\s+(?:a\s+)?page\s+(?:called|named|title[d]?)\s+["“]?(.+?)["”]?(?:\s+with\s+([\s\S]+))?$/i);
+  if (createPageWithTextMatch?.[1]) {
+    const title = createPageWithTextMatch[1].trim();
+    const body = (createPageWithTextMatch[2] || "").trim();
+    const children = body ? buildPlainTextBlocks(body, "paragraph") : [];
+    await notion.pages.create({
+      parent: { page_id: notionPageId },
+      properties: { title: { title: [{ text: { content: title.slice(0, 180) } }] } } as any,
+      children: children as any
+    });
+    return body
+      ? `Done. I created the page \"${title}\" and added your text content.`
+      : `Done. I created the page \"${title}\".`;
+  }
+
+  return null;
+}
+
 function buildHardQuotaFallbackText(lastMessage: string, retryAfterSeconds: number): string {
   const normalized = lastMessage.trim().slice(0, 800);
   const mutating = isLikelyMutatingPrompt(normalized);
@@ -550,6 +628,39 @@ export async function createServer() {
                 },
                 required: ["prompt"]
               }
+            },
+            {
+              name: "create_page_with_text",
+              description: "Create a new Notion page from plain text without requiring block JSON.",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING, description: "Title for the new page." },
+                  text: { type: Type.STRING, description: "Main text content to add to the page." },
+                  style: {
+                    type: Type.STRING,
+                    description: "Optional block style: paragraph, heading_1, heading_2, heading_3, bulleted_list_item, numbered_list_item, to_do, quote, callout, code, toggle"
+                  },
+                  parent_id: { type: Type.STRING, description: "Optional parent page id. Defaults to root page." }
+                },
+                required: ["title", "text"]
+              }
+            },
+            {
+              name: "append_text_to_page",
+              description: "Append plain text to a Notion page without requiring block JSON.",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  page_id: { type: Type.STRING, description: "Optional target page id. Defaults to root page." },
+                  text: { type: Type.STRING, description: "Text content to append." },
+                  style: {
+                    type: Type.STRING,
+                    description: "Optional block style: paragraph, heading_1, heading_2, heading_3, bulleted_list_item, numbered_list_item, to_do, quote, callout, code, toggle"
+                  }
+                },
+                required: ["text"]
+              }
             }
       ];
 
@@ -612,12 +723,21 @@ export async function createServer() {
       Guidelines:
       - parent_id: ${notionPageId}
       - Be professional, highly efficient, and proactive.
+      - ACTION EXECUTION RULE: If the user asks to create/update/delete/add/extract/search/research in Notion, you MUST execute by calling tools. Do not only describe or promise actions.
+      - For plain text content requests, prefer create_page_with_text or append_text_to_page before using advanced block JSON.
+      - If page/database id is missing, call search_notion first, then perform the requested action.
       - When summarizing, be concise but thorough.
       - For "action items", use 'to_do' blocks.
       - For "key ideas", use 'bulleted_list_item' or 'callout' blocks.
       - If a user asks for a "graph", provide the JSON representation as shown above.
       - Always confirm successful operations with a brief summary.
       - If you hit a quota error, apologize and suggest the user wait a few seconds before retrying.`;
+
+      const directActionResult = await tryHandleDirectAction(lastMessage, notion, notionPageId);
+      if (directActionResult) {
+        runtimeMetrics.requestsSucceeded += 1;
+        return res.json({ content: directActionResult, executedDirectAction: true });
+      }
 
       // Fast-path for simple greetings or short messages (less than 20 chars)
       const isSimpleMessage = lastMessage.length < 20 && 
@@ -656,7 +776,10 @@ export async function createServer() {
       
       let finalResponseText = "";
       let turnCount = 0;
-      const MAX_TURNS = isBudgetMode ? 1 : ((process.env.VERCEL || process.env.NETLIFY) ? 2 : 5);
+      const requiresActionExecution = isActionIntent(lastMessage);
+      const baseMaxTurns = isBudgetMode ? 1 : ((process.env.VERCEL || process.env.NETLIFY) ? 2 : 5);
+      const MAX_TURNS = requiresActionExecution ? Math.max(baseMaxTurns, 2) : baseMaxTurns;
+      let forcedToolCallAttempted = false;
 
       while (turnCount < MAX_TURNS) {
         console.log(`[Chat API] Starting turn ${turnCount + 1}/${MAX_TURNS}`);
@@ -676,6 +799,17 @@ export async function createServer() {
         const functionCalls = response.functionCalls;
         
         if (!functionCalls || functionCalls.length === 0) {
+          if (requiresActionExecution && !forcedToolCallAttempted) {
+            forcedToolCallAttempted = true;
+            currentHistory.push({
+              role: "user",
+              parts: [{
+                text: "Execution reminder: The user asked for a Notion action. You must call one or more tools now. If you need identifiers, call search_notion first."
+              }]
+            } as any);
+            turnCount++;
+            continue;
+          }
           finalResponseText = response.text;
           break;
         }
@@ -775,6 +909,19 @@ export async function createServer() {
                   }
                 }
                 result = { imageUrl: base64Image || "Failed to generate image" };
+                break;
+              case "create_page_with_text":
+                result = await notion.pages.create({
+                  parent: { page_id: (args.parent_id as string) || notionPageId },
+                  properties: { title: { title: [{ text: { content: String(args.title || "Untitled").slice(0, 180) } }] } } as any,
+                  children: buildPlainTextBlocks(String(args.text || ""), String(args.style || "paragraph")) as any
+                });
+                break;
+              case "append_text_to_page":
+                result = await notion.blocks.children.append({
+                  block_id: (args.page_id as string) || notionPageId,
+                  children: buildPlainTextBlocks(String(args.text || ""), String(args.style || "paragraph")) as any
+                });
                 break;
               default:
                 result = { error: "Unknown tool" };

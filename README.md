@@ -77,6 +77,12 @@ Additional protections now enabled:
 - Short-lived response caching for non-mutating prompts to reduce repeated Gemini calls.
 - Graceful fallback mode for hard-quota scenarios (returns actionable response instead of hard failure).
 
+Action execution improvements:
+
+- Added direct-action handling for common commands like "add ... to this page".
+- Added plain-text tools: `create_page_with_text` and `append_text_to_page` so the assistant can execute writes without complex block JSON.
+- Added a forced second-pass execution reminder when the model replies with text for action intents instead of calling tools.
+
 ## Observability
 
 Use the runtime metrics endpoint to monitor request health:
