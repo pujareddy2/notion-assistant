@@ -169,7 +169,7 @@ export default function App() {
                   className="bg-white border border-slate-200 p-4 rounded-xl hover:border-indigo-400 hover:shadow-md transition-all text-left flex items-start gap-3 group"
                 >
                   <div className="bg-slate-50 p-2 rounded-lg group-hover:bg-indigo-50 transition-colors">
-                    {React.cloneElement(action.icon as React.ReactElement, { className: "w-4 h-4 text-slate-600 group-hover:text-indigo-600" })}
+                    {React.cloneElement(action.icon as React.ReactElement<{ className?: string }>, { className: "w-4 h-4 text-slate-600 group-hover:text-indigo-600" })}
                   </div>
                   <span className="text-sm font-medium text-slate-700">{action.label}</span>
                 </button>

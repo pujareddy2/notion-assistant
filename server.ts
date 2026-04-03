@@ -1,11 +1,15 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
-import path from "path";
+import * as path from "path";
+import { fileURLToPath } from "url";
 import cors from "cors";
 import dotenv from "dotenv";
 import fs from "fs";
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { Client } from "@notionhq/client";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const envResult = dotenv.config({ override: true });
 if (envResult.error) {
@@ -255,62 +259,62 @@ async function startServer() {
             switch (name) {
               case "create_page":
                 result = await notion.pages.create({
-                  parent: { page_id: args.parent_id || notionPageId },
-                  properties: { title: { title: [{ text: { content: args.title } }] } } as any,
-                  children: args.content_blocks
+                  parent: { page_id: (args.parent_id as string) || notionPageId },
+                  properties: { title: { title: [{ text: { content: args.title as string } }] } } as any,
+                  children: args.content_blocks as any
                 });
                 break;
               case "update_page_content":
                 result = await notion.blocks.children.append({
-                  block_id: args.page_id,
-                  children: args.content_blocks
+                  block_id: args.page_id as string,
+                  children: args.content_blocks as any
                 });
                 break;
               case "get_page_content":
-                result = await notion.blocks.children.list({ block_id: args.page_id });
+                result = await notion.blocks.children.list({ block_id: args.page_id as string });
                 break;
               case "create_database":
                 result = await notion.databases.create({
-                  parent: { page_id: args.parent_id || notionPageId },
-                  title: [{ text: { content: args.title } }],
-                  properties: args.properties
-                });
+                  parent: { type: "page_id", page_id: (args.parent_id as string) || notionPageId } as any,
+                  title: [{ text: { content: args.title as string } }],
+                  properties: args.properties as any
+                } as any);
                 break;
               case "add_database_row":
                 result = await notion.pages.create({
-                  parent: { database_id: args.database_id },
-                  properties: args.properties
+                  parent: { database_id: args.database_id as string },
+                  properties: args.properties as any
                 });
                 break;
               case "update_database_row":
                 result = await notion.pages.update({
-                  page_id: args.page_id,
-                  properties: args.properties
+                  page_id: args.page_id as string,
+                  properties: args.properties as any
                 });
                 break;
               case "list_database_rows":
-                result = await notion.databases.query({
-                  database_id: args.database_id,
+                result = await (notion.databases as any).query({
+                  database_id: args.database_id as string,
                   filter: args.filter as any,
                   sorts: args.sorts as any
                 });
                 break;
               case "search_notion":
                 result = await notion.search({
-                  query: args.query,
+                  query: args.query as string,
                   filter: args.filter as any
                 });
                 break;
               case "archive_page":
                 result = await notion.pages.update({
-                  page_id: args.page_id,
+                  page_id: args.page_id as string,
                   archived: true
                 });
                 break;
               case "generate_image":
                 const imgResponse = await ai.models.generateContent({
                   model: "gemini-2.5-flash-image",
-                  contents: [{ parts: [{ text: args.prompt }] }]
+                  contents: args.prompt as string
                 });
                 let imageUrl = "";
                 for (const part of imgResponse.candidates[0].content.parts) {
@@ -335,7 +339,7 @@ async function startServer() {
         }));
 
         // Add model's call and tool's response to history
-        currentHistory.push({ role: "model", parts: response.candidates[0].content.parts });
+        currentHistory.push({ role: "model", parts: response.candidates[0].content.parts as any });
         currentHistory.push({ 
           role: "user", 
           parts: toolResults.map(r => ({ 
@@ -344,7 +348,7 @@ async function startServer() {
               response: r.result || { error: r.error },
               id: r.id
             }
-          })) 
+          })) as any
         });
 
         turnCount++;
@@ -372,7 +376,7 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), "dist");
+    const distPath = path.join(__dirname, "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
