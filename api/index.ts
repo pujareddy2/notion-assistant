@@ -1,4 +1,4 @@
-import { createServer } from "../server";
+import { createServer } from "./server.js";
 
 let app: any;
 
