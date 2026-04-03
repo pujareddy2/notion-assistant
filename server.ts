@@ -484,6 +484,16 @@ export async function createServer() {
     }
   });
 
+  // Global error handler
+  app.use((err: any, req: any, res: any, next: any) => {
+    console.error("Express Global Error:", err);
+    res.status(500).json({ 
+      error: "Internal Server Error", 
+      details: err.message,
+      stack: process.env.NODE_ENV !== "production" ? err.stack : undefined
+    });
+  });
+
   if (process.env.NODE_ENV !== "production" && !process.env.VERCEL && !process.env.NETLIFY) {
     try {
       const { createServer: createViteServer } = await import("vite");
