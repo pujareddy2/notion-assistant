@@ -387,6 +387,19 @@ export async function createServer() {
         });
 
         turnCount++;
+
+        // Optimization for serverless: If we just finished the first turn and it included tools,
+        // and we are on a platform with tight timeouts, return a manual summary instead of another AI call.
+        if (turnCount === 1 && (process.env.NETLIFY || process.env.VERCEL) && functionCalls.length > 0) {
+          console.log("[Chat API] Serverless optimization: Returning manual summary after tool execution");
+          const summary = toolResults.map(r => {
+            const toolName = r.name.replace(/_/g, ' ');
+            if (r.result?.error) return `❌ Failed to ${toolName}: ${r.result.error}`;
+            return `✅ Successfully executed: ${toolName}`;
+          }).join('\n');
+          finalResponseText = "I've processed your request:\n\n" + summary + "\n\n(Note: Summary generated automatically to prevent timeout)";
+          break;
+        }
       }
 
       // If we exited the loop due to MAX_TURNS, get a final summary

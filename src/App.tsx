@@ -53,7 +53,7 @@ export default function App() {
   const fetchWithRetry = async (url: string, options: any, retries = 2, backoff = 1000): Promise<Response> => {
     try {
       const controller = new AbortController();
-      const id = setTimeout(() => controller.abort(), 15000); // 15s timeout
+      const id = setTimeout(() => controller.abort(), 30000); // 30s timeout
       
       const response = await fetch(url, {
         ...options,
