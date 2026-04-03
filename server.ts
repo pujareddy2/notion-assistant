@@ -17,6 +17,20 @@ export async function createServer() {
   app.use(cors());
   app.use(express.json({ limit: "50mb" }));
 
+  // Health check
+  app.get("/api/health", (req, res) => {
+    res.json({ 
+      status: "ok", 
+      env: {
+        hasGemini: !!process.env.GEMINI_API_KEY,
+        hasNotion: !!process.env.NOTION_API_KEY,
+        hasPageId: !!process.env.NOTION_PAGE_ID,
+        nodeEnv: process.env.NODE_ENV,
+        isNetlify: !!process.env.NETLIFY
+      }
+    });
+  });
+
   // API Routes
   app.post("/api/chat", async (req, res) => {
     const startTime = Date.now();
@@ -44,8 +58,14 @@ export async function createServer() {
       if (!notionPageId) console.error("[Chat API] NOTION_PAGE_ID is missing!");
 
       if (!geminiApiKey || !notionApiKey || !notionPageId) {
+        console.error(`[Chat API] Missing keys: Gemini=${!!geminiApiKey}, Notion=${!!notionApiKey}, PageId=${!!notionPageId}`);
         return res.status(500).json({ 
-          error: "Missing API keys. Please ensure GEMINI_API_KEY, NOTION_API_KEY, and NOTION_PAGE_ID are set in your environment variables."
+          error: "Missing API keys. Please ensure GEMINI_API_KEY, NOTION_API_KEY, and NOTION_PAGE_ID are set in your environment variables.",
+          debug: {
+            hasGemini: !!geminiApiKey,
+            hasNotion: !!notionApiKey,
+            hasPageId: !!notionPageId
+          }
         });
       }
 
@@ -384,12 +404,16 @@ export async function createServer() {
   });
 
   if (process.env.NODE_ENV !== "production" && !process.env.VERCEL && !process.env.NETLIFY) {
-    const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
+    try {
+      const { createServer: createViteServer } = await import("vite");
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+    } catch (e) {
+      console.warn("Vite not found or failed to load, skipping Vite middleware.");
+    }
   } else if (!process.env.NETLIFY && !process.env.VERCEL) {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));

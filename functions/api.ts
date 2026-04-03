@@ -9,9 +9,11 @@ export const handler = async (event: any, context: any) => {
     if (!serverlessHandler) {
       console.log("[Netlify Function] Initializing server...");
       const app = await createServer();
-      serverlessHandler = serverless(app);
+      serverlessHandler = serverless(app, {
+        binary: ["image/*", "font/*", "application/pdf"],
+      });
     }
-    return serverlessHandler(event, context);
+    return await serverlessHandler(event, context);
   } catch (err: any) {
     console.error("[Netlify Function] Initialization Error:", err);
     return {
