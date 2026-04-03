@@ -1,23 +1,17 @@
 [build]
-command = "npm run build"
-publish = "dist"
-functions = "functions"
+  command = "npm run build"
+  publish = "dist"
+  functions = "functions"
 
 [build.environment]
-NODE_VERSION = "20"
-
-[functions]
-timeout = 26
-
-[functions.node_bundle]
-external_node_modules = ["vite"]
+  NODE_VERSION = "20"
 
 [[redirects]]
-from = "/api/*"
-to = "/.netlify/functions/api/:splat"
-status = 200
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
 
 [[redirects]]
-from = "/*"
-to = "/index.html"
-status = 200
+  from = "/*"
+  to = "/index.html"
+  status = 200
