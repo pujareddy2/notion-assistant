@@ -3,14 +3,19 @@ import { createServer } from "../server";
 let app: any;
 
 export default async (req: any, res: any) => {
+  console.log(`[Vercel] Request: ${req.method} ${req.url}`);
   try {
     if (!app) {
+      console.log("[Vercel] Initializing server...");
       app = await createServer();
+      console.log("[Vercel] Server initialized successfully");
     }
+    
     // Vercel's req/res are compatible with Express
-    return app(req, res);
+    // We don't return the app call, we just execute it
+    app(req, res);
   } catch (err: any) {
-    console.error("Vercel Function Error:", err);
+    console.error("[Vercel] Critical Function Error:", err);
     if (res && typeof res.status === 'function') {
       res.status(500).json({ 
         error: "Failed to initialize server", 

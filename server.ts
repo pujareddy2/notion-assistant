@@ -1,5 +1,5 @@
 import express from "express";
-import * as path from "node:path";
+import path from "path";
 import cors from "cors";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
