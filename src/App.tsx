@@ -70,10 +70,10 @@ export default function App() {
     scrollToBottom();
   }, [messages]);
 
-  const fetchWithRetry = async (url: string, options: any, retries = 2, backoff = 1000): Promise<Response> => {
+  const fetchWithRetry = async (url: string, options: any, retries = 1, backoff = 2000): Promise<Response> => {
     try {
       const controller = new AbortController();
-      const id = setTimeout(() => controller.abort(), 30000); // 30s timeout
+      const id = setTimeout(() => controller.abort(), 35000); // 35s timeout
       
       const response = await fetch(url, {
         ...options,
@@ -85,7 +85,7 @@ export default function App() {
       if (response.status === 504 && retries > 0) {
         console.warn(`504 Gateway Timeout for ${url}. Retrying in ${backoff}ms...`);
         await new Promise(res => setTimeout(res, backoff));
-        return fetchWithRetry(url, options, retries - 1, backoff * 1.5);
+        return fetchWithRetry(url, options, retries - 1, backoff * 2);
       }
       
       return response;

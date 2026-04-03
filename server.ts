@@ -6,10 +6,16 @@ import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { Client } from "@notionhq/client";
 
 // Helper for exponential backoff on Gemini API calls (503/429 errors)
-async function retryGenerateContent(ai: any, params: any, maxRetries = 3) {
+async function retryGenerateContent(ai: any, params: any) {
+  const isServerless = !!(process.env.NETLIFY || process.env.VERCEL);
+  const maxRetries = isServerless ? 1 : 3;
   let lastError;
   for (let i = 0; i < maxRetries; i++) {
     try {
+      // Use a faster model for serverless if not specified
+      if (isServerless && params.model === "gemini-3-flash-preview") {
+        params.model = "gemini-3.1-flash-lite-preview";
+      }
       return await ai.models.generateContent(params);
     } catch (error: any) {
       lastError = error;
@@ -260,7 +266,7 @@ export async function createServer() {
 
       if (isSimpleMessage) {
         const fastResponse = await retryGenerateContent(ai, {
-          model: "gemini-3-flash-preview",
+          model: "gemini-3.1-flash-lite-preview",
           contents: [{ role: "user", parts: [{ text: lastMessage }] }],
           config: {
             systemInstruction: "Briefly respond to greetings or short chat.",
@@ -285,13 +291,13 @@ export async function createServer() {
         console.log(`[Chat API] Starting turn ${turnCount + 1}/${MAX_TURNS}`);
         console.time(`Turn ${turnCount + 1}`);
         const response = await retryGenerateContent(ai, {
-          model: "gemini-3-flash-preview",
+          model: (process.env.NETLIFY || process.env.VERCEL) ? "gemini-3.1-flash-lite-preview" : "gemini-3-flash-preview",
           contents: currentHistory,
           config: {
             systemInstruction,
             tools: tools,
-            maxOutputTokens: 800,
-            thinkingConfig: { thinkingLevel: (process.env.NETLIFY || process.env.VERCEL) ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW }
+            maxOutputTokens: 500,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
           },
         });
         console.timeEnd(`Turn ${turnCount + 1}`);
