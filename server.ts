@@ -341,24 +341,35 @@ export async function createServer() {
               case "generate_image":
                 const imgResponse = await ai.models.generateContent({
                   model: "gemini-2.5-flash-image",
-                  contents: args.prompt as string
+                  contents: [{ role: "user", parts: [{ text: args.prompt as string }] }]
                 });
                 let base64Image = "";
-                for (const part of imgResponse.candidates[0].content.parts) {
-                  if (part.inlineData) {
-                    base64Image = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-                    break;
+                if (imgResponse.candidates?.[0]?.content?.parts) {
+                  for (const part of imgResponse.candidates[0].content.parts) {
+                    if (part.inlineData) {
+                      base64Image = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+                      break;
+                    }
                   }
                 }
-                result = { imageUrl: base64Image };
+                result = { imageUrl: base64Image || "Failed to generate image" };
                 break;
               default:
                 result = { error: "Unknown tool" };
             }
             return { name, result, id };
           } catch (err: any) {
-            console.error(`Tool error (${name}):`, err);
-            return { name, error: err.message, id };
+            console.error(`[Chat API] Tool error (${name}):`, err);
+            // Include more details in the tool response so the AI can understand what went wrong
+            return { 
+              name, 
+              result: { 
+                error: err.message,
+                code: err.code,
+                status: err.status
+              }, 
+              id 
+            };
           }
         }));
 
@@ -369,7 +380,7 @@ export async function createServer() {
           parts: toolResults.map(r => ({ 
             functionResponse: {
               name: r.name,
-              response: r.result || { error: r.error },
+              response: r.result,
               id: r.id
             }
           })) as any
@@ -399,8 +410,26 @@ export async function createServer() {
 
     } catch (error: any) {
       console.timeEnd("ChatRequest");
-      console.error("Agentic Error:", error);
-      res.status(500).json({ error: error.message || "An unexpected error occurred in the workspace assistant." });
+      console.error("[Chat API] Agentic Error:", error);
+      
+      // Log more details for debugging
+      const errorDetails = {
+        message: error.message,
+        stack: error.stack,
+        env: {
+          hasGemini: !!process.env.GEMINI_API_KEY,
+          hasNotion: !!process.env.NOTION_API_KEY,
+          hasPageId: !!process.env.NOTION_PAGE_ID,
+          nodeEnv: process.env.NODE_ENV,
+          isNetlify: !!process.env.NETLIFY
+        }
+      };
+      console.error("[Chat API] Error Details:", JSON.stringify(errorDetails, null, 2));
+
+      res.status(500).json({ 
+        error: error.message || "An unexpected error occurred in the workspace assistant.",
+        debug: process.env.NODE_ENV !== "production" ? errorDetails : undefined
+      });
     }
   });
 
