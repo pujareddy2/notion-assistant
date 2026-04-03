@@ -59,6 +59,7 @@ export async function createServer() {
         hasNotion: !!process.env.NOTION_API_KEY,
         hasPageId: !!process.env.NOTION_PAGE_ID,
         nodeEnv: process.env.NODE_ENV,
+        isVercel: !!process.env.VERCEL,
         isNetlify: !!process.env.NETLIFY
       }
     });
@@ -467,6 +468,7 @@ export async function createServer() {
           hasNotion: !!process.env.NOTION_API_KEY,
           hasPageId: !!process.env.NOTION_PAGE_ID,
           nodeEnv: process.env.NODE_ENV,
+          isVercel: !!process.env.VERCEL,
           isNetlify: !!process.env.NETLIFY
         }
       };
@@ -498,14 +500,11 @@ export async function createServer() {
     });
   }
 
-  if (!process.env.VERCEL && !process.env.NETLIFY) {
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
-  }
-
   return app;
 }
+
+// Export for serverless environments (Vercel)
+export default createServer;
 
 // Start server if running directly
 const isMain = process.argv[1] && (
@@ -515,7 +514,13 @@ const isMain = process.argv[1] && (
 );
 
 if (isMain && !process.env.NETLIFY && !process.env.VERCEL) {
-  createServer().catch(err => {
+  createServer().then(app => {
+    // Port 3000 is hardcoded by the infrastructure
+    const PORT = 3000;
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }).catch(err => {
     console.error("Failed to start server:", err);
     process.exit(1);
   });
