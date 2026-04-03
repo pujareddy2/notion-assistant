@@ -1,9 +1,8 @@
 import express from "express";
-import * as path from "path";
-import { fileURLToPath } from "url";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import cors from "cors";
 import dotenv from "dotenv";
-import fs from "fs";
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { Client } from "@notionhq/client";
 

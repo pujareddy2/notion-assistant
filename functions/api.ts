@@ -1,5 +1,5 @@
 import serverless from "serverless-http";
-import { createServer } from "../server.ts";
+import { createServer } from "../server";
 
 let serverlessHandler: any;
 
