@@ -18,7 +18,8 @@ import {
   Bot,
   X,
   ChevronRight,
-  Info
+  Info,
+  BarChart
 } from "lucide-react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -70,10 +71,20 @@ export default function App() {
     scrollToBottom();
   }, [messages]);
 
-  const fetchWithRetry = async (url: string, options: any, retries = 1, backoff = 2000): Promise<Response> => {
+  const handleRetry = async () => {
+    if (messages.length < 2) return;
+    const lastUserMessage = [...messages].reverse().find(m => m.role === "user");
+    if (!lastUserMessage) return;
+    
+    setInput(lastUserMessage.content);
+    setMessages(prev => prev.slice(0, prev.lastIndexOf(lastUserMessage)));
+    // handleSubmit will be called by the user or we can trigger it manually
+  };
+
+  const fetchWithRetry = async (url: string, options: any, retries = 2, backoff = 3000): Promise<Response> => {
     try {
       const controller = new AbortController();
-      const id = setTimeout(() => controller.abort(), 35000); // 35s timeout
+      const id = setTimeout(() => controller.abort(), 45000); // 45s timeout
       
       const response = await fetch(url, {
         ...options,
@@ -82,8 +93,8 @@ export default function App() {
       
       clearTimeout(id);
 
-      if (response.status === 504 && retries > 0) {
-        console.warn(`504 Gateway Timeout for ${url}. Retrying in ${backoff}ms...`);
+      if ((response.status === 504 || response.status === 429) && retries > 0) {
+        console.warn(`${response.status} Error for ${url}. Retrying in ${backoff}ms...`);
         await new Promise(res => setTimeout(res, backoff));
         return fetchWithRetry(url, options, retries - 1, backoff * 2);
       }
@@ -244,6 +255,29 @@ export default function App() {
                   </div>
                 </div>
               )}
+              {error && !isLoading && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="bg-red-50 border border-red-100 p-4 rounded-2xl flex flex-col items-center gap-3 w-full max-w-md mx-auto"
+                >
+                  <div className="flex items-center gap-2 text-red-600">
+                    <Info className="w-4 h-4" />
+                    <span className="text-sm font-medium">Something went wrong</span>
+                  </div>
+                  <p className="text-xs text-red-500 text-center leading-relaxed">
+                    {error.includes("429") || error.includes("quota") 
+                      ? "Gemini API quota exceeded. This happens when there are too many requests. Please wait a moment and try again."
+                      : error}
+                  </p>
+                  <button
+                    onClick={handleRetry}
+                    className="bg-red-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-red-700 transition-all active:scale-95"
+                  >
+                    Retry Request
+                  </button>
+                </motion.div>
+              )}
               <div ref={messagesEndRef} />
             </div>
 
@@ -256,10 +290,10 @@ export default function App() {
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   {[
-                    { icon: <Plus className="w-4 h-4" />, label: "Create a new page", prompt: "Create a new page titled 'Project Brainstorm' with a brief outline for a new mobile app." },
-                    { icon: <Search className="w-4 h-4" />, label: "Research a topic", prompt: "Research the latest trends in sustainable architecture and summarize the key points." },
-                    { icon: <FileText className="w-4 h-4" />, label: "Add content to a page", prompt: "Search for my 'Meeting Notes' page and add a new section for 'Action Items'." },
-                    { icon: <Trash2 className="w-4 h-4" />, label: "Delete a page or text", prompt: "Find the page titled 'Old Draft' and archive it." }
+                    { icon: <Database className="w-4 h-4" />, label: "Create Task Database", prompt: "Create a database for 'Project Tasks' with Status (Select), Priority (Select), and Due Date (Date) properties." },
+                    { icon: <Search className="w-4 h-4" />, label: "Analyze Workspace", prompt: "Search my workspace for 'Research' pages, summarize the key ideas, and convert them into a bulleted list of action items." },
+                    { icon: <FileText className="w-4 h-4" />, label: "Summarize Meeting", prompt: "Find my 'Weekly Sync' page, extract the key points, and convert the notes into a checklist of action items." },
+                    { icon: <Layout className="w-4 h-4" />, label: "Generate Insights", prompt: "Query my 'Project Tasks' database, filter for 'High Priority' tasks, and generate a summary of our current progress." }
                   ].map((action, i) => (
                     <button
                       key={i}
@@ -324,16 +358,33 @@ export default function App() {
                 <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100">
                   <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2">
                     <FileText className="w-4 h-4 text-indigo-600" />
-                    Recent Activity
+                    Knowledge Base
                   </h3>
-                  <p className="text-sm text-slate-500">Track your latest Notion updates and AI interactions here.</p>
+                  <p className="text-sm text-slate-500 mb-4">AI-powered summaries of your workspace content.</p>
+                  <div className="space-y-3">
+                    <div className="bg-white p-3 rounded-xl border border-slate-200 text-xs text-slate-600">
+                      <strong>Project Alpha:</strong> Summary of key milestones and current blockers...
+                    </div>
+                    <div className="bg-white p-3 rounded-xl border border-slate-200 text-xs text-slate-600">
+                      <strong>Research Notes:</strong> Key findings on sustainable architecture...
+                    </div>
+                  </div>
                 </div>
                 <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100">
                   <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2">
-                    <Search className="w-4 h-4 text-indigo-600" />
-                    Workspace Insights
+                    <BarChart className="w-4 h-4 text-indigo-600" />
+                    Representations
                   </h3>
-                  <p className="text-sm text-slate-500">AI-powered analysis of your Notion content and structure.</p>
+                  <p className="text-sm text-slate-500 mb-4">Visual insights from your database records.</p>
+                  <div className="h-32 bg-white rounded-xl border border-slate-200 flex items-center justify-center">
+                    <div className="flex items-end gap-2 h-20">
+                      <div className="w-4 bg-indigo-200 h-1/2 rounded-t" />
+                      <div className="w-4 bg-indigo-400 h-3/4 rounded-t" />
+                      <div className="w-4 bg-indigo-600 h-full rounded-t" />
+                      <div className="w-4 bg-indigo-300 h-2/3 rounded-t" />
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-center text-slate-400 mt-2 italic">Task Distribution by Priority</p>
                 </div>
               </div>
             </motion.div>

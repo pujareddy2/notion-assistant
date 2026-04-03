@@ -8,7 +8,7 @@ import { Client } from "@notionhq/client";
 // Helper for exponential backoff on Gemini API calls (503/429 errors)
 async function retryGenerateContent(ai: any, params: any) {
   const isServerless = !!(process.env.NETLIFY || process.env.VERCEL);
-  const maxRetries = isServerless ? 1 : 3;
+  const maxRetries = isServerless ? 2 : 4;
   let lastError;
   for (let i = 0; i < maxRetries; i++) {
     try {
@@ -22,12 +22,15 @@ async function retryGenerateContent(ai: any, params: any) {
       const errorMsg = error.message || "";
       const isRetryable = errorMsg.includes("503") || 
                          errorMsg.includes("429") || 
+                         errorMsg.includes("RESOURCE_EXHAUSTED") ||
                          errorMsg.includes("UNAVAILABLE") ||
                          errorMsg.includes("high demand") ||
                          errorMsg.includes("overloaded");
       
       if (isRetryable && i < maxRetries - 1) {
-        const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
+        // More aggressive backoff for 429s
+        const baseDelay = errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") ? 3000 : 1000;
+        const delay = Math.pow(2, i) * baseDelay + Math.random() * 1000;
         console.warn(`[Chat API] Gemini busy/overloaded (attempt ${i + 1}/${maxRetries}). Retrying in ${Math.round(delay)}ms...`);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
@@ -156,6 +159,56 @@ export async function createServer() {
               }
             },
             {
+              name: "create_database",
+              description: "Create a new database in Notion.",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  parent_id: { type: Type.STRING, description: "Parent page ID." },
+                  title: { type: Type.STRING, description: "Database title." },
+                  properties: { type: Type.OBJECT, description: "Database schema (e.g., { 'Name': { 'title': {} }, 'Status': { 'select': { 'options': [...] } } })" }
+                },
+                required: ["parent_id", "title", "properties"]
+              }
+            },
+            {
+              name: "add_database_row",
+              description: "Add a row (page) to a Notion database.",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  database_id: { type: Type.STRING, description: "The ID of the database." },
+                  properties: { type: Type.OBJECT, description: "Row properties matching the database schema." }
+                },
+                required: ["database_id", "properties"]
+              }
+            },
+            {
+              name: "update_database_row",
+              description: "Update properties of an existing row in a Notion database.",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  page_id: { type: Type.STRING, description: "The ID of the row (page) to update." },
+                  properties: { type: Type.OBJECT, description: "Properties to update." }
+                },
+                required: ["page_id", "properties"]
+              }
+            },
+            {
+              name: "list_database_rows",
+              description: "List rows from a Notion database with optional filtering and sorting.",
+              parameters: {
+                type: Type.OBJECT,
+                properties: {
+                  database_id: { type: Type.STRING, description: "The ID of the database." },
+                  filter: { type: Type.OBJECT, description: "Optional filter (e.g., { property: 'Status', select: { equals: 'Done' } })" },
+                  sorts: { type: Type.ARRAY, items: { type: Type.OBJECT }, description: "Optional sorts (e.g., [{ property: 'Date', direction: 'ascending' }])" }
+                },
+                required: ["database_id"]
+              }
+            },
+            {
               name: "search_notion",
               description: "Search for pages or databases in Notion.",
               parameters: {
@@ -215,21 +268,23 @@ export async function createServer() {
         parts: [{ text: m.content }]
       }));
 
-      const systemInstruction = `You are Notion AI, a highly capable workspace assistant.
-      Your primary capabilities are:
-      1. **Creation of pages**: Use 'create_page'.
-      2. **Deletion of pages**: Use 'archive_page'.
-      3. **Adding text to a page**: Use 'update_page_content' to append blocks.
-      4. **Deleting specific text**: Use 'get_page_content' to find block IDs, then 'delete_block' to remove them.
-      5. **Researching**: Use your internal knowledge and the 'googleSearch' tool to answer questions and provide information.
+      const systemInstruction = `You are Notion AI, the ultimate workspace assistant.
+      Your capabilities include:
+      1. **Database Management**: Create databases, add/update rows, query with filters, and sort results.
+      2. **Page Operations**: Create/delete pages, add/delete specific text blocks.
+      3. **Rich Content Support**: Support headings, bullet lists, toggle lists, tables, code blocks, and checklists.
+      4. **Content Transformation**: Summarize long pages, extract key ideas, convert notes to bullet points, and turn meeting notes into action items.
+      5. **Research & Inference**: Use 'googleSearch' for real-time research and generate summaries/inferences from workspace data.
+      6. **Representations**: Generate structured data for graphs or visual representations when requested.
 
       Guidelines:
       - parent_id: ${notionPageId}
-      - Be concise and professional, like Notion AI.
-      - Always confirm actions briefly.
-      - If a user asks to "delete text", first fetch the page content to identify the blocks.
-      - Use 'search_notion' if the user doesn't provide a specific page ID.
-      - Summarize briefly after actions.`;
+      - Be professional, highly efficient, and proactive.
+      - When summarizing, be concise but thorough.
+      - For "action items", use checklists.
+      - For "key ideas", use bullet points or callouts.
+      - If a user asks for a "graph", provide a structured JSON representation in your text response that the UI can interpret.
+      - Always confirm successful operations with a brief summary.`;
 
       // Fast-path for simple greetings or short messages (less than 20 chars)
       const isSimpleMessage = lastMessage.length < 20 && 
