@@ -340,6 +340,59 @@ async function listPageText(notion: Client, pageId: string): Promise<string> {
   return lines.join("\n");
 }
 
+function extractQueryTerms(prompt: string): string[] {
+  const stopWords = new Set([
+    "the", "and", "for", "with", "that", "this", "into", "from", "your", "page", "notion",
+    "create", "update", "delete", "add", "append", "make", "need", "please", "about", "what"
+  ]);
+
+  const words = String(prompt || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .map(w => w.trim())
+    .filter(w => w.length >= 4 && !stopWords.has(w));
+
+  return Array.from(new Set(words)).slice(0, 6);
+}
+
+async function buildWorkspaceContext(
+  notion: Client,
+  prompt: string,
+  defaultPageId: string,
+  maxPages: number
+): Promise<string> {
+  const terms = extractQueryTerms(prompt);
+  const query = terms.length > 0 ? terms.join(" ") : String(prompt || "").slice(0, 60);
+  if (!query.trim()) return "";
+
+  const search = await notion.search({
+    query,
+    filter: { value: "page", property: "object" } as any,
+    page_size: Math.max(2, Math.min(maxPages, 6))
+  });
+
+  const pages = (search.results || [])
+    .filter((r: any) => r.object === "page")
+    .slice(0, maxPages)
+    .map((r: any) => ({ id: r.id as string, title: extractPageTitle(r) || "Untitled" }));
+
+  if (pages.length === 0) {
+    const fallbackText = await listPageText(notion, defaultPageId).catch(() => "");
+    return fallbackText ? `Root page context:\n${cleanModelText(fallbackText, 1600)}` : "";
+  }
+
+  const snippets: string[] = [];
+  for (const p of pages) {
+    const txt = await listPageText(notion, p.id).catch(() => "");
+    if (txt) {
+      snippets.push(`Page: ${p.title} (id: ${p.id})\n${cleanModelText(txt, 1400)}`);
+    }
+  }
+
+  return snippets.join("\n\n---\n\n");
+}
+
 function buildDatabaseTemplateProperties(templateType: string): Record<string, any> {
   const kind = String(templateType || "task_tracker").toLowerCase();
 
@@ -563,6 +616,8 @@ export async function createServer() {
     const startTime = Date.now();
     console.time("ChatRequest");
     const normalizedMessages = normalizeMessages(req.body?.messages || []);
+    const agentMode = String(req.body?.agentMode || "standard").toLowerCase();
+    const isCompleteAiMode = agentMode === "complete" || agentMode === "deep" || agentMode === "notion_ai";
 
     console.log(`[Chat API] Received request with ${normalizedMessages.length || 0} messages`);
 
@@ -905,7 +960,7 @@ export async function createServer() {
 
       // Optimize history: only keep recent messages to reduce token overhead and speed up processing
       const lastMessage = normalizedMessages[normalizedMessages.length - 1].content;
-      const historyLimit = isBudgetMode ? 3 : 6;
+      const historyLimit = isCompleteAiMode ? (isBudgetMode ? 6 : 10) : (isBudgetMode ? 3 : 6);
       const recentMessages = normalizedMessages.slice(-historyLimit - 1, -1);
 
       const canUseResponseCache = !isLikelyMutatingPrompt(lastMessage);
@@ -924,6 +979,10 @@ export async function createServer() {
         role: m.role === "user" ? "user" : "model",
         parts: [{ text: m.content }]
       }));
+
+      const workspaceContext = isCompleteAiMode
+        ? await buildWorkspaceContext(notion, lastMessage, notionPageId, isBudgetMode ? 2 : 4)
+        : "";
 
       const systemInstruction = `You are Notion AI, the ultimate workspace assistant.
       Your capabilities include:
@@ -958,7 +1017,11 @@ export async function createServer() {
       - For "key ideas", use 'bulleted_list_item' or 'callout' blocks.
       - If a user asks for a "graph", provide the JSON representation as shown above.
       - Always confirm successful operations with a brief summary.
-      - If you hit a quota error, apologize and suggest the user wait a few seconds before retrying.`;
+      - If you hit a quota error, apologize and suggest the user wait a few seconds before retrying.
+      - If workspace context is provided, ground your answer in it and mention relevant page titles used.
+
+      Workspace context (may be partial):
+      ${workspaceContext || "No extra context retrieved."}`;
 
       const directActionResult = await tryHandleDirectAction(lastMessage, notion, notionPageId);
       if (directActionResult) {
@@ -1004,7 +1067,9 @@ export async function createServer() {
       let finalResponseText = "";
       let turnCount = 0;
       const requiresActionExecution = isActionIntent(lastMessage);
-      const baseMaxTurns = isBudgetMode ? 1 : ((process.env.VERCEL || process.env.NETLIFY) ? 2 : 5);
+      const baseMaxTurns = isCompleteAiMode
+        ? (isBudgetMode ? 2 : ((process.env.VERCEL || process.env.NETLIFY) ? 3 : 6))
+        : (isBudgetMode ? 1 : ((process.env.VERCEL || process.env.NETLIFY) ? 2 : 5));
       const MAX_TURNS = requiresActionExecution ? Math.max(baseMaxTurns, 2) : baseMaxTurns;
       let forcedToolCallAttempted = false;
       let latestToolSummaryText = "";
@@ -1018,7 +1083,7 @@ export async function createServer() {
           config: {
             systemInstruction,
             tools: tools,
-            maxOutputTokens: isBudgetMode ? 220 : 500,
+            maxOutputTokens: isCompleteAiMode ? (isBudgetMode ? 320 : 700) : (isBudgetMode ? 220 : 500),
             thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
           },
         });

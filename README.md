@@ -92,6 +92,12 @@ Upgraded Notion-agent capabilities:
 - Smart database templates: create starter databases for `task_tracker`, `meeting_notes`, `content_calendar`, and `crm` (`create_smart_database`).
 - Content rewriting skill: rewrite page content by objective/tone/format and optionally append output into another page (`rewrite_page_content`).
 - Execution trace in replies: API responses now include a compact list of executed tool actions for transparency.
+- Complete AI mode: deeper multi-turn reasoning, larger context window, and automatic retrieval of relevant Notion page context before answering.
+
+Frontend mode toggle:
+
+- `Complete AI: ON` sends `agentMode: "complete"` to backend for deeper context-driven responses.
+- `Complete AI: OFF` uses lighter standard mode for faster/cheaper responses.
 
 Prompt examples:
 

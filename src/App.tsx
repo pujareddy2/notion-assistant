@@ -92,6 +92,7 @@ export default function App() {
   const [apiStatus, setApiStatus] = useState<{ hasGemini: boolean; hasNotion: boolean; hasPageId: boolean } | null>(null);
   const [chartData, setChartData] = useState<ChartData | null>(null);
   const [knowledgeBase, setKnowledgeBase] = useState<{ title: string; summary: string }[]>([]);
+  const [agentMode, setAgentMode] = useState<"standard" | "complete">("complete");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isInCooldown = typeof retryAfterSeconds === "number" && retryAfterSeconds > 0;
 
@@ -248,7 +249,7 @@ export default function App() {
       const response = await fetchWithRetry("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: [...messages, userMessage] }),
+        body: JSON.stringify({ messages: [...messages, userMessage], agentMode }),
       });
 
       if (!response.ok) {
@@ -325,6 +326,18 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setAgentMode(prev => prev === "complete" ? "standard" : "complete")}
+            className={cn(
+              "px-3 py-1.5 rounded-full text-xs font-semibold transition-all border",
+              agentMode === "complete"
+                ? "bg-emerald-600 text-white border-emerald-600"
+                : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
+            )}
+            title="Toggle deeper AI reasoning and richer workspace context"
+          >
+            {agentMode === "complete" ? "Complete AI: ON" : "Complete AI: OFF"}
+          </button>
           <button 
             onClick={() => setCurrentPage("chat")}
             className={cn(
@@ -503,6 +516,9 @@ export default function App() {
               </p>
             )}
             <p className="text-[10px] text-center text-slate-400 mt-2">
+              Mode: {agentMode === "complete" ? "Complete AI" : "Standard"} •
+            </p>
+            <p className="text-[10px] text-center text-slate-400 mt-1">
               Press Enter to send • Shift + Enter for new line
             </p>
           </div>
