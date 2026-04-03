@@ -38,12 +38,15 @@ async function retryGenerateContent(ai: any, params: any) {
   throw lastError;
 }
 
-const envResult = dotenv.config({ override: true });
-if (envResult.error) {
-  console.error("Dotenv Error:", envResult.error);
-}
-
 export async function createServer() {
+  // Load environment variables in non-production environments
+  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL && !process.env.NETLIFY) {
+    const envResult = dotenv.config({ override: true });
+    if (envResult.error) {
+      console.warn("Dotenv Warning (Expected in some environments):", envResult.error.message);
+    }
+  }
+
   const app = express();
   const PORT = 3000;
 
