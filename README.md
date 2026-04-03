@@ -22,8 +22,8 @@ You MUST set the following environment variables in your deployment platform:
 1.  Connect your GitHub repository to Netlify.
 2.  Set the build command to `npm run build`.
 3.  Set the publish directory to `dist`.
-4.  Add the environment variables.
-5.  (Optional) You may need to adapt the backend to Netlify Functions if you want a full-stack experience on Netlify.
+4.  Add the environment variables: `GEMINI_API_KEY`, `NOTION_API_KEY`, `NOTION_PAGE_ID`.
+5.  The `netlify.toml` and `functions/api.ts` are already configured to handle the Express backend as a Netlify Function.
 
 ## Local Development
 

@@ -19,11 +19,7 @@ if (envResult.error) {
 const PUBLIC_DIR = path.join(process.cwd(), "public");
 const GENERATED_DIR = path.join(PUBLIC_DIR, "generated");
 
-if (!fs.existsSync(GENERATED_DIR)) {
-  fs.mkdirSync(GENERATED_DIR, { recursive: true });
-}
-
-async function startServer() {
+export async function createServer() {
   const app = express();
   const PORT = 3000;
 
@@ -377,7 +373,7 @@ async function startServer() {
     }
   });
 
-  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
+  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL && !process.env.NETLIFY) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -391,7 +387,7 @@ async function startServer() {
     });
   }
 
-  if (!process.env.VERCEL) {
+  if (!process.env.VERCEL && !process.env.NETLIFY) {
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });
@@ -400,4 +396,4 @@ async function startServer() {
   return app;
 }
 
-export const app = startServer();
+export const app = createServer();
