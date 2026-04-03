@@ -1,13 +1,9 @@
 import express from "express";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 import cors from "cors";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { Client } from "@notionhq/client";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const envResult = dotenv.config({ override: true });
 if (envResult.error) {
@@ -394,8 +390,8 @@ export async function createServer() {
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(__dirname, "dist");
+  } else if (!process.env.NETLIFY && !process.env.VERCEL) {
+    const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
@@ -412,7 +408,13 @@ export async function createServer() {
 }
 
 // Start server if running directly
-if (import.meta.url === `file://${fileURLToPath(import.meta.url)}`) {
+const isMain = process.argv[1] && (
+  process.argv[1].endsWith("server.ts") || 
+  process.argv[1].endsWith("server.js") || 
+  process.argv[1].includes("node_modules/.bin/tsx")
+);
+
+if (isMain && !process.env.NETLIFY && !process.env.VERCEL) {
   createServer().catch(err => {
     console.error("Failed to start server:", err);
     process.exit(1);
