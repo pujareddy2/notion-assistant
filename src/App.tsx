@@ -60,6 +60,16 @@ interface ApiErrorPayload {
   retryAfterSeconds?: number;
 }
 
+interface ApiSuccessPayload {
+  content?: string;
+  error?: string;
+  code?: string;
+  degraded?: boolean;
+  retryAfterSeconds?: number;
+}
+
+const CHAT_STORAGE_KEY = "notion-assistant-chat-v1";
+
 function parseRetryAfterSeconds(response: Response): number | null {
   const rawRetryAfter = response.headers.get("Retry-After");
   if (!rawRetryAfter) return null;
@@ -83,6 +93,44 @@ export default function App() {
   const [chartData, setChartData] = useState<ChartData | null>(null);
   const [knowledgeBase, setKnowledgeBase] = useState<{ title: string; summary: string }[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const isInCooldown = typeof retryAfterSeconds === "number" && retryAfterSeconds > 0;
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(CHAT_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      const restored = parsed
+        .filter((m: any) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+        .slice(-60);
+      if (restored.length > 0) {
+        setMessages(restored);
+      }
+    } catch (e) {
+      console.warn("Failed to restore chat history", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages.slice(-60)));
+    } catch (e) {
+      console.warn("Failed to persist chat history", e);
+    }
+  }, [messages]);
+
+  useEffect(() => {
+    if (!isInCooldown) return;
+    const timer = setInterval(() => {
+      setRetryAfterSeconds(prev => {
+        if (typeof prev !== "number") return prev;
+        if (prev <= 1) return null;
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isInCooldown]);
 
   const checkHealth = async () => {
     try {
@@ -186,7 +234,7 @@ export default function App() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    if (!input.trim() || isLoading || isInCooldown) return;
 
     const userMessage = { role: "user" as const, content: input };
     setMessages(prev => [...prev, userMessage]);
@@ -213,7 +261,8 @@ export default function App() {
             : " Please retry in a short while.";
 
           setErrorCode(code);
-          setRetryAfterSeconds(errorData.retryAfterSeconds ?? null);
+          const retryFromHeader = parseRetryAfterSeconds(response);
+          setRetryAfterSeconds(errorData.retryAfterSeconds ?? retryFromHeader ?? null);
 
           if (code === "hard_quota") {
             throw new Error(
@@ -231,12 +280,15 @@ export default function App() {
         throw new Error(errorData.error || `Server error: ${response.status}`);
       }
 
-      const data = await response.json();
+      const data: ApiSuccessPayload = await response.json();
       if (data.error) {
         setError(data.error);
         setMessages(prev => [...prev, { role: "assistant", content: `**Error:** ${data.error}` }]);
       } else {
-        setMessages(prev => [...prev, { role: "assistant", content: data.content }]);
+        const prefix = data.degraded || data.code === "fallback_mode"
+          ? "**Fallback Mode:** Gemini is temporarily unavailable.\n\n"
+          : "";
+        setMessages(prev => [...prev, { role: "assistant", content: `${prefix}${data.content || "No response received."}` }]);
       }
     } catch (err: any) {
       const errorMessage = err.message || "Failed to connect to the server.";
@@ -364,6 +416,8 @@ export default function App() {
                   <p className="text-xs text-red-500 text-center leading-relaxed">
                     {errorCode === "hard_quota"
                       ? "Gemini API quota is exhausted for this deployment key. Add billing or increase quota in Google AI Studio, then retry."
+                      : errorCode === "client_rate_limited"
+                        ? `Too many requests were sent from your device. Please wait${typeof retryAfterSeconds === "number" ? ` about ${retryAfterSeconds}s` : " a moment"} before retrying.`
                       : errorCode === "rate_limited"
                         ? `Gemini is currently rate-limited. Please wait${typeof retryAfterSeconds === "number" ? ` about ${retryAfterSeconds}s` : " a moment"} and retry.`
                         : (error.includes("429") || error.toLowerCase().includes("quota")
@@ -372,9 +426,10 @@ export default function App() {
                   </p>
                   <button
                     onClick={handleRetry}
+                    disabled={isInCooldown}
                     className="bg-red-600 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-red-700 transition-all active:scale-95"
                   >
-                    Retry Request
+                    {isInCooldown ? `Retry in ${retryAfterSeconds}s` : "Retry Request"}
                   </button>
                 </motion.div>
               )}
@@ -430,13 +485,18 @@ export default function App() {
                 />
                 <button
                   type="submit"
-                  disabled={isLoading || !input.trim()}
+                  disabled={isLoading || !input.trim() || isInCooldown}
                   className="absolute right-3 bottom-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white p-2 rounded-xl transition-all shadow-lg shadow-indigo-200 active:scale-95"
                 >
                   <Send className="w-5 h-5" />
                 </button>
               </form>
             </div>
+            {isInCooldown && (
+              <p className="text-[11px] text-center text-amber-600 mt-2 font-semibold">
+                Temporary cooldown active. You can send the next request in about {retryAfterSeconds}s.
+              </p>
+            )}
             <p className="text-[10px] text-center text-slate-400 mt-2">
               Press Enter to send • Shift + Enter for new line
             </p>

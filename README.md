@@ -18,6 +18,17 @@ Optional (recommended for free-tier stability):
 - `ENABLE_WEB_SEARCH=false`
 - `ENABLE_IMAGE_GENERATION=false`
 
+Optional backend safeguards (already enabled with defaults):
+
+- `HARD_QUOTA_COOLDOWN_MS=600000`
+- `REQUEST_WINDOW_MS=60000`
+- `MAX_REQUESTS_PER_WINDOW=25`
+- `MAX_MESSAGE_CHARS=6000`
+- `MAX_HISTORY_MESSAGES=24`
+- `RESPONSE_CACHE_TTL_MS=90000`
+- `ENABLE_HARD_QUOTA_FALLBACK=true`
+- `METRICS_TOKEN=<optional secret for /api/metrics>`
+
 ## Vercel Deployment
 
 1.  Connect your GitHub repository to Vercel.
@@ -58,6 +69,34 @@ This project now handles both cases differently:
 
 - Returns `429` with `code: "hard_quota"` for exhausted quota (no pointless retries).
 - Returns `429` with `code: "rate_limited"` for transient limits (automatic retries are applied).
+
+Additional protections now enabled:
+
+- Lightweight client-level request throttling to prevent burst abuse from draining quota.
+- Message normalization and caps to control payload/token growth.
+- Short-lived response caching for non-mutating prompts to reduce repeated Gemini calls.
+- Graceful fallback mode for hard-quota scenarios (returns actionable response instead of hard failure).
+
+## Observability
+
+Use the runtime metrics endpoint to monitor request health:
+
+- `GET /api/metrics`
+
+Returned counters include:
+
+- total requests, successes, failures
+- client rate-limit hits
+- Gemini rate-limit and hard-quota events
+- cache hits/writes
+- tool call counts/failures
+- fallback responses served
+
+For production safety, set `METRICS_TOKEN` and call:
+
+- `GET /api/metrics?token=YOUR_TOKEN`
+or
+- `Authorization: Bearer YOUR_TOKEN`
 
 For hard quota issues:
 

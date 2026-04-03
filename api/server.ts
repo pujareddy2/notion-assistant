@@ -2,15 +2,150 @@ import express from "express";
 import path from "path";
 import cors from "cors";
 import dotenv from "dotenv";
+import { createHash } from "crypto";
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { Client } from "@notionhq/client";
 
 type GeminiErrorKind = "hard_quota" | "rate_limited" | "service_unavailable" | "unknown";
 let quotaCooldownUntil = 0;
-const HARD_QUOTA_COOLDOWN_MS = 10 * 60 * 1000;
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+const HARD_QUOTA_COOLDOWN_MS = parsePositiveInt(process.env.HARD_QUOTA_COOLDOWN_MS, 10 * 60 * 1000);
+const REQUEST_WINDOW_MS = parsePositiveInt(process.env.REQUEST_WINDOW_MS, 60 * 1000);
+const MAX_REQUESTS_PER_WINDOW = parsePositiveInt(process.env.MAX_REQUESTS_PER_WINDOW, 25);
+const MAX_MESSAGE_CHARS = parsePositiveInt(process.env.MAX_MESSAGE_CHARS, 6000);
+const MAX_HISTORY_MESSAGES = parsePositiveInt(process.env.MAX_HISTORY_MESSAGES, 24);
+const CACHE_TTL_MS = parsePositiveInt(process.env.RESPONSE_CACHE_TTL_MS, 90 * 1000);
+const ENABLE_HARD_QUOTA_FALLBACK = process.env.ENABLE_HARD_QUOTA_FALLBACK !== "false";
+const METRICS_TOKEN = (process.env.METRICS_TOKEN || "").trim();
+
+const requestCounters = new Map<string, { count: number; windowStart: number }>();
+const responseCache = new Map<string, { content: string; expiresAt: number }>();
+const runtimeMetrics = {
+  startedAt: Date.now(),
+  requestsTotal: 0,
+  requestsSucceeded: 0,
+  requestsFailed: 0,
+  clientRateLimited: 0,
+  geminiRateLimited: 0,
+  geminiHardQuota: 0,
+  cacheHits: 0,
+  cacheWrites: 0,
+  fallbackResponses: 0,
+  toolCalls: 0,
+  toolCallFailures: 0
+};
 
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function cleanupInMemoryMaps(now = Date.now()) {
+  for (const [key, entry] of requestCounters.entries()) {
+    if (now - entry.windowStart > REQUEST_WINDOW_MS * 2) {
+      requestCounters.delete(key);
+    }
+  }
+  for (const [key, entry] of responseCache.entries()) {
+    if (entry.expiresAt <= now) {
+      responseCache.delete(key);
+    }
+  }
+}
+
+function getClientIp(req: express.Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.length > 0) {
+    return forwarded.split(",")[0].trim();
+  }
+  if (Array.isArray(forwarded) && forwarded.length > 0) {
+    return String(forwarded[0]).split(",")[0].trim();
+  }
+  return req.ip || "unknown";
+}
+
+function getRateLimitDecision(ip: string, now = Date.now()): { allowed: boolean; retryAfterSeconds: number } {
+  const current = requestCounters.get(ip);
+  if (!current || now - current.windowStart >= REQUEST_WINDOW_MS) {
+    requestCounters.set(ip, { count: 1, windowStart: now });
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+
+  current.count += 1;
+  requestCounters.set(ip, current);
+
+  if (current.count <= MAX_REQUESTS_PER_WINDOW) {
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+
+  const retryAfterSeconds = Math.max(
+    1,
+    Math.ceil((REQUEST_WINDOW_MS - (now - current.windowStart)) / 1000)
+  );
+  return { allowed: false, retryAfterSeconds };
+}
+
+function normalizeMessages(rawMessages: any[]): Array<{ role: "user" | "assistant"; content: string }> {
+  return rawMessages
+    .filter((m: any) => m && (m.role === "user" || m.role === "assistant"))
+    .map((m: any) => {
+      const rawText = typeof m.content === "string" ? m.content : String(m.content ?? "");
+      const trimmed = rawText.trim();
+      const content = trimmed.length > MAX_MESSAGE_CHARS ? trimmed.slice(0, MAX_MESSAGE_CHARS) : trimmed;
+      return {
+        role: m.role,
+        content
+      };
+    })
+    .filter((m: any) => m.content.length > 0)
+    .slice(-MAX_HISTORY_MESSAGES);
+}
+
+function isLikelyMutatingPrompt(prompt: string): boolean {
+  return /(create|update|delete|archive|append|add\s+row|insert|remove|edit|modify|generate\s+image)/i.test(prompt);
+}
+
+function buildCacheKey(messages: Array<{ role: "user" | "assistant"; content: string }>, notionPageId: string): string {
+  const payload = JSON.stringify({ messages, notionPageId });
+  return createHash("sha256").update(payload).digest("hex");
+}
+
+function buildHardQuotaFallbackText(lastMessage: string, retryAfterSeconds: number): string {
+  const normalized = lastMessage.trim().slice(0, 800);
+  const mutating = isLikelyMutatingPrompt(normalized);
+  const header = "Gemini quota is temporarily unavailable for this deployment key, so I am running in fallback mode.";
+  const timing = `Estimated retry window: about ${retryAfterSeconds} seconds.`;
+
+  if (mutating) {
+    return [
+      header,
+      timing,
+      "",
+      "I did not run write actions yet to avoid partial updates.",
+      "Prepared action plan:",
+      "1. Validate target page/database exists and integration access is active.",
+      "2. Re-run this exact request when quota resets.",
+      "3. If urgent, split into smaller steps (search first, then update/create).",
+      "",
+      `Saved intent summary: ${normalized}`
+    ].join("\n");
+  }
+
+  return [
+    header,
+    timing,
+    "",
+    "I can still provide a lightweight response without live Gemini reasoning:",
+    `- Request understood: ${normalized}`,
+    "- Suggestion: keep prompts short and avoid repeated retries during cooldown.",
+    "- After cooldown, retry once to resume full Notion AI behavior."
+  ].join("\n");
 }
 
 function getErrorMessage(error: any): string {
@@ -150,22 +285,81 @@ export async function createServer() {
     });
   });
 
+  app.get("/api/metrics", (req, res) => {
+    const authHeader = String(req.headers.authorization || "");
+    const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+    const token = String(req.query.token || bearer || "").trim();
+    const isProduction = process.env.NODE_ENV === "production";
+
+    if (isProduction && METRICS_TOKEN && token !== METRICS_TOKEN) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    return res.json({
+      status: "ok",
+      uptimeSeconds: Math.floor((Date.now() - runtimeMetrics.startedAt) / 1000),
+      config: {
+        requestWindowMs: REQUEST_WINDOW_MS,
+        maxRequestsPerWindow: MAX_REQUESTS_PER_WINDOW,
+        cacheTtlMs: CACHE_TTL_MS,
+        quotaCooldownMs: HARD_QUOTA_COOLDOWN_MS,
+        fallbackEnabled: ENABLE_HARD_QUOTA_FALLBACK
+      },
+      counters: {
+        ...runtimeMetrics,
+        activeRateLimitBuckets: requestCounters.size,
+        activeCacheEntries: responseCache.size
+      }
+    });
+  });
+
   // API Routes
   app.post("/api/chat", async (req, res) => {
+    cleanupInMemoryMaps();
+    runtimeMetrics.requestsTotal += 1;
     const startTime = Date.now();
     console.time("ChatRequest");
-    const { messages } = req.body;
+    const normalizedMessages = normalizeMessages(req.body?.messages || []);
 
-    console.log(`[Chat API] Received request with ${messages?.length || 0} messages`);
+    console.log(`[Chat API] Received request with ${normalizedMessages.length || 0} messages`);
 
-    if (!messages || !Array.isArray(messages)) {
+    if (!Array.isArray(req.body?.messages)) {
       return res.status(400).json({ error: "Messages array is required" });
+    }
+
+    if (normalizedMessages.length === 0) {
+      return res.status(400).json({ error: "At least one non-empty message is required" });
+    }
+
+    const ip = getClientIp(req);
+    const ipRateLimit = getRateLimitDecision(ip);
+    if (!ipRateLimit.allowed) {
+      runtimeMetrics.clientRateLimited += 1;
+      runtimeMetrics.requestsFailed += 1;
+      res.setHeader("Retry-After", String(ipRateLimit.retryAfterSeconds));
+      return res.status(429).json({
+        error: "Too many requests from this client. Please retry shortly.",
+        code: "client_rate_limited",
+        retryAfterSeconds: ipRateLimit.retryAfterSeconds
+      });
     }
 
     try {
       const now = Date.now();
       if (quotaCooldownUntil > now) {
         const retryAfterSeconds = getQuotaRetryAfterSeconds(now);
+        runtimeMetrics.geminiHardQuota += 1;
+        if (ENABLE_HARD_QUOTA_FALLBACK) {
+          runtimeMetrics.fallbackResponses += 1;
+          runtimeMetrics.requestsSucceeded += 1;
+          return res.json({
+            content: buildHardQuotaFallbackText(normalizedMessages[normalizedMessages.length - 1].content, retryAfterSeconds),
+            degraded: true,
+            code: "fallback_mode",
+            retryAfterSeconds
+          });
+        }
+        runtimeMetrics.requestsFailed += 1;
         res.setHeader("Retry-After", String(retryAfterSeconds));
         return res.status(429).json({
           error: "Gemini quota is currently exhausted for this key. Please retry later or switch to a key with available free quota.",
@@ -192,6 +386,7 @@ export async function createServer() {
 
       if (!geminiApiKey || !notionApiKey || !notionPageId) {
         console.error(`[Chat API] Missing keys: Gemini=${!!geminiApiKey}, Notion=${!!notionApiKey}, PageId=${!!notionPageId}`);
+        runtimeMetrics.requestsFailed += 1;
         return res.status(500).json({ 
           error: "Missing API keys. Please ensure GEMINI_API_KEY, NOTION_API_KEY, and NOTION_PAGE_ID are set in your environment variables.",
           debug: {
@@ -370,10 +565,22 @@ export async function createServer() {
         tools.push({ googleSearch: {} });
       }
 
-      // Optimize history: only keep last 6 messages to reduce token overhead and speed up processing
-      const lastMessage = messages[messages.length - 1].content;
+      // Optimize history: only keep recent messages to reduce token overhead and speed up processing
+      const lastMessage = normalizedMessages[normalizedMessages.length - 1].content;
       const historyLimit = isBudgetMode ? 3 : 6;
-      const recentMessages = messages.slice(-historyLimit - 1, -1);
+      const recentMessages = normalizedMessages.slice(-historyLimit - 1, -1);
+
+      const canUseResponseCache = !isLikelyMutatingPrompt(lastMessage);
+      const cacheKey = canUseResponseCache ? buildCacheKey(normalizedMessages, notionPageId) : "";
+      if (canUseResponseCache && cacheKey) {
+        const cached = responseCache.get(cacheKey);
+        if (cached && cached.expiresAt > Date.now()) {
+          console.log("[Chat API] Served cached response for read-only request");
+          runtimeMetrics.cacheHits += 1;
+          runtimeMetrics.requestsSucceeded += 1;
+          return res.json({ content: cached.content, cached: true });
+        }
+      }
       
       const history = recentMessages.map(m => ({
         role: m.role === "user" ? "user" : "model",
@@ -429,6 +636,14 @@ export async function createServer() {
             thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
           },
         });
+        if (canUseResponseCache && cacheKey) {
+          responseCache.set(cacheKey, {
+            content: fastResponse.text || "Hello! How can I help you with Notion today?",
+            expiresAt: Date.now() + CACHE_TTL_MS
+          });
+          runtimeMetrics.cacheWrites += 1;
+        }
+        runtimeMetrics.requestsSucceeded += 1;
         console.timeEnd("ChatRequest");
         return res.json({ content: fastResponse.text || "Hello! How can I help you with Notion today?" });
       }
@@ -467,6 +682,7 @@ export async function createServer() {
 
         // Execute tools in parallel where possible
         const toolResults = await Promise.all(functionCalls.map(async (call) => {
+          runtimeMetrics.toolCalls += 1;
           const { name, args, id } = call;
           console.log(`[Turn ${turnCount}] Executing tool: ${name}`);
 
@@ -565,6 +781,7 @@ export async function createServer() {
             }
             return { name, result, id };
           } catch (err: any) {
+            runtimeMetrics.toolCallFailures += 1;
             console.error(`[Chat API] Tool error (${name}):`, err);
             // Include more details in the tool response so the AI can understand what went wrong
             return { 
@@ -626,6 +843,14 @@ export async function createServer() {
       const totalTime = Date.now() - startTime;
       console.timeEnd("ChatRequest");
       console.log(`[Chat API] Request completed in ${totalTime}ms`);
+      if (canUseResponseCache && cacheKey && finalResponseText) {
+        responseCache.set(cacheKey, {
+          content: finalResponseText,
+          expiresAt: Date.now() + CACHE_TTL_MS
+        });
+        runtimeMetrics.cacheWrites += 1;
+      }
+      runtimeMetrics.requestsSucceeded += 1;
       res.json({ content: finalResponseText || "I've completed the requested actions in your Notion workspace." });
 
     } catch (error: any) {
@@ -637,11 +862,25 @@ export async function createServer() {
       if (isQuotaStyleError) {
         if (geminiError.kind === "hard_quota") {
           quotaCooldownUntil = Date.now() + HARD_QUOTA_COOLDOWN_MS;
+          runtimeMetrics.geminiHardQuota += 1;
+        } else {
+          runtimeMetrics.geminiRateLimited += 1;
         }
 
         const retryAfterSeconds = geminiError.kind === "hard_quota"
           ? getQuotaRetryAfterSeconds()
           : 20;
+
+        if (geminiError.kind === "hard_quota" && ENABLE_HARD_QUOTA_FALLBACK) {
+          runtimeMetrics.fallbackResponses += 1;
+          runtimeMetrics.requestsSucceeded += 1;
+          return res.json({
+            content: buildHardQuotaFallbackText(normalizedMessages[normalizedMessages.length - 1].content, retryAfterSeconds),
+            degraded: true,
+            code: "fallback_mode",
+            retryAfterSeconds
+          });
+        }
 
         const responseBody = geminiError.kind === "hard_quota"
           ? {
@@ -656,6 +895,7 @@ export async function createServer() {
             };
 
         res.setHeader("Retry-After", String(responseBody.retryAfterSeconds));
+        runtimeMetrics.requestsFailed += 1;
         return res.status(429).json(responseBody);
       }
       
@@ -674,6 +914,7 @@ export async function createServer() {
       };
       console.error("[Chat API] Error Details:", JSON.stringify(errorDetails, null, 2));
 
+      runtimeMetrics.requestsFailed += 1;
       res.status(500).json({ 
         error: getErrorMessage(error) || "An unexpected error occurred in the workspace assistant.",
         debug: process.env.NODE_ENV !== "production" ? errorDetails : undefined
